@@ -1,0 +1,13 @@
+To perform the same task in CATIA V5, the overall programmatic logic remains the same, but the implementation differs due to how the CATIA COM API and document link engine operate:
+- Active Session Required: Unlike SOLIDWORKS, which has a dedicated offline method (ReplaceReferencedDocument) to modify closed files on disk[1], CATIA requires the document to be opened in the active session (Documents.Open)[2] to replace its referenced links[3].
+- Handling Broken Links: If the parts are already moved or renamed, their links will show up as broken (missing) in CATIA[4]. When a link is broken, querying the file path property (child.ReferenceProduct.Parent.FullName) will fail and throw a COM exception[4]. However, CATIA caches the PartNumber (the reference name, which usually matches the file name without extension) inside the .CATProduct file[4]. The program below relies on this PartNumber to map your broken links to your new file paths[4].
+- Reference Replacement: The equivalent method in CATIA is Products.ReplaceComponent[5]. It takes the old child component, the new absolute file path, and a boolean flag (true to replace all instances of this component in the assembly)[6].
+
+Setup Instructions in Visual Studio:
+- Create a new C# Console App (.NET Framework) project.
+- Right-click on References and select Add Reference....
+- Go to the COM tab on the left and search for / check the following:
+    - INFITF Type Library (corresponds to INFITF)
+    - ProductStructureTypeLib (corresponds to ProductStructureTypeLib)
+- In your Solution Explorer, select the newly added assemblies in your References list, open their Properties panel, and change Embed Interop Types to False.
+- Build and run.

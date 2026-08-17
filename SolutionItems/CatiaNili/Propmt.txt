@@ -1,0 +1,814 @@
+This is a console app I have to change the address of part file in a Catia file:
+
+
+
+using System;
+
+using System.Collections.Generic;
+
+using System.IO;
+
+using System.Runtime.InteropServices;
+
+// CATIA COM Interop Namespaces
+
+using INFITF;
+
+using ProductStructureTypeLib;
+
+namespace CatiaReferenceReplacer
+
+{
+
+    class Program
+
+    {
+
+        static void Main(string[] args)
+
+        {
+
+            // Targeting CATIA files instead of SOLIDWORKS files
+
+            string[] assembliesPaths = new string[]
+
+            {
+
+                @"C:\Users\my_user\asm1\Assem1.CATProduct",
+
+                @"C:\Users\my_user\asm2\Assem2.CATProduct"
+
+            };
+
+            Dictionary<string, string> renameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+
+            {
+
+                { @"C:\Users\my_user\old_loc\Part1.CATPart", @"C:\Users\my_user\new_loc\Part1_.CATPart" },
+
+                { @"C:\Users\my_user\old_loc\Part2.CATPart", @"C:\Users\my_user\new_loc\Part2_.CATPart" }
+
+            };
+
+            INFITF.Application catiaApp = null;
+
+            try
+
+            {
+
+                // Connect to a running instance of CATIA or launch a new background session
+
+                try
+
+                {
+
+                    catiaApp = (INFITF.Application)Marshal.GetActiveObject("CATIA.Application");
+
+                    Console.WriteLine("Connected to running CATIA instance.");
+
+                }
+
+                catch (COMException)
+
+                {
+
+                    Console.WriteLine("CATIA is not running. Starting a new session...");
+
+                    Type catiaType = Type.GetTypeFromProgID("CATIA.Application");
+
+                    catiaApp = (INFITF.Application)Activator.CreateInstance(catiaType);
+
+                    catiaApp.Visible = true;
+
+                }
+
+                if (catiaApp == null)
+
+                {
+
+                    Console.WriteLine("Failed to initialize CATIA application.");
+
+                    return;
+
+                }
+
+                // Standardize path casings and slashes in our map
+
+                var normalizedRenameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var kvp in renameMap)
+
+                {
+
+                    normalizedRenameMap[NormalizePath(kvp.Key)] = NormalizePath(kvp.Value);
+
+                }
+
+                foreach (string assemblyPath in assembliesPaths)
+
+                {
+
+                    string normAssemblyPath = NormalizePath(assemblyPath);
+
+                    if (!File.Exists(normAssemblyPath))
+
+                    {
+
+                        Console.WriteLine($"Assembly not found on disk: {normAssemblyPath}");
+
+                        continue;
+
+                    }
+
+                    Console.WriteLine($"\nOpening assembly: {normAssemblyPath}");
+
+                    ProductDocument productDoc = null;
+
+                    try
+
+                    {
+
+                        // Open the assembly document. CATIA will open it even if children have broken links.
+
+                        productDoc = (ProductDocument)catiaApp.Documents.Open(normAssemblyPath);
+
+                    }
+
+                    catch (Exception ex)
+
+                    {
+
+                        Console.WriteLine($"Failed to open assembly: {ex.Message}");
+
+                        continue;
+
+                    }
+
+                    if (productDoc == null) continue;
+
+                    Product rootProduct = productDoc.Product;
+
+                    HashSet<string> replacedPartNumbers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                    Console.WriteLine("Traversing and replacing references...");
+
+                    ReplaceReferencesInProduct(rootProduct, normalizedRenameMap, replacedPartNumbers);
+
+                    // Save and close the document
+
+                    try
+
+                    {
+
+                        productDoc.Save();
+
+                        Console.WriteLine("Assembly saved successfully.");
+
+                    }
+
+                    catch (Exception ex)
+
+                    {
+
+                        Console.WriteLine($"Failed to save assembly: {ex.Message}");
+
+                    }
+
+                    finally
+
+                    {
+
+                        productDoc.Close();
+
+                    }
+
+                }
+
+            }
+
+            catch (Exception ex)
+
+            {
+
+                Console.WriteLine($"An error occurred during execution: {ex.Message}");
+
+            }
+
+            finally
+
+            {
+
+                if (catiaApp != null)
+
+                {
+
+                    Marshal.ReleaseComObject(catiaApp);
+
+                }
+
+            }
+
+            Console.WriteLine("\nTask finished. Press any key to exit.");
+
+            Console.ReadKey();
+
+        }
+
+        private static void ReplaceReferencesInProduct(Product currentProduct, Dictionary<string, string> renameMap, HashSet<string> replacedPartNumbers)
+
+        {
+
+            Products childProducts = currentProduct.Products;
+
+            if (childProducts == null) return;
+
+            // We gather candidates into lists to prevent modifying/shifting the COM collection while iterating
+
+            List<Product> childrenToReplace = new List<Product>();
+
+            List<Product> subProductsToRecurse = new List<Product>();
+
+            int count = childProducts.Count;
+
+            for (int i = 1; i <= count; i++)
+
+            {
+
+                try
+
+                {
+
+                    Product child = childProducts.Item(i);
+
+                    string partNumber = child.PartNumber;
+
+                    string matchingOldPath = FindMatchingKeyInMap(partNumber, renameMap);
+
+                    if (matchingOldPath != null)
+
+                    {
+
+                        if (!replacedPartNumbers.Contains(partNumber))
+
+                        {
+
+                            childrenToReplace.Add(child);
+
+                        }
+
+                    }
+
+                    else
+
+                    {
+
+                        // Safely check if the child is a subassembly to traverse into
+
+                        bool isSubAssembly = false;
+
+                        try
+
+                        {
+
+                            isSubAssembly = (child.Products != null && child.Products.Count > 0);
+
+                        }
+
+                        catch { }
+
+                        if (isSubAssembly)
+
+                        {
+
+                            subProductsToRecurse.Add(child);
+
+                        }
+
+                    }
+
+                }
+
+                catch (COMException)
+
+                {
+
+                    // Ignore transient COM issues during traversal
+
+                }
+
+            }
+
+            // Perform component replacements
+
+            foreach (Product child in childrenToReplace)
+
+            {
+
+                try
+
+                {
+
+                    string partNumber = child.PartNumber;
+
+                    string matchingOldPath = FindMatchingKeyInMap(partNumber, renameMap);
+
+                    if (matchingOldPath != null && !replacedPartNumbers.Contains(partNumber))
+
+                    {
+
+                        string newPath = renameMap[matchingOldPath];
+
+                        Console.WriteLine($"  Replacing component: {partNumber}");
+
+                        Console.WriteLine($"    Old Path: {matchingOldPath}");
+
+                        Console.WriteLine($"    New Path: {newPath}");
+
+                        // Replaces the element and propagates to all other instances (multi-instances = true)
+
+                        childProducts.ReplaceComponent(child, newPath, true);
+
+                        replacedPartNumbers.Add(partNumber);
+
+                    }
+
+                }
+
+                catch (Exception ex)
+
+                {
+
+                    Console.WriteLine($"    Failed to replace reference: {ex.Message}");
+
+                }
+
+            }
+
+            // Recurse into nested sub-assemblies
+
+            foreach (Product subProd in subProductsToRecurse)
+
+            {
+
+                try
+
+                {
+
+                    // Verify if the sub-assembly COM object is still alive
+
+                    string nameCheck = subProd.Name;
+
+                    ReplaceReferencesInProduct(subProd, renameMap, replacedPartNumbers);
+
+                }
+
+                catch (COMException)
+
+                {
+
+                    // Object is invalid (e.g. its parent assembly was replaced); skip safely
+
+                }
+
+            }
+
+        }
+
+        private static string FindMatchingKeyInMap(string partNumber, Dictionary<string, string> renameMap)
+
+        {
+
+            foreach (var key in renameMap.Keys)
+
+            {
+
+                // Extracts "Part1" from "C:\...\Part1.CATPart"
+
+                string fileName = Path.GetFileNameWithoutExtension(key);
+
+                if (string.Equals(fileName, partNumber, StringComparison.OrdinalIgnoreCase))
+
+                {
+
+                    return key;
+
+                }
+
+            }
+
+            return null;
+
+        }
+
+        private static string NormalizePath(string path)
+
+        {
+
+            if (string.IsNullOrEmpty(path)) return string.Empty;
+
+            try
+
+            {
+
+                return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+            }
+
+            catch
+
+            {
+
+                return path;
+
+            }
+
+        }
+
+    }
+
+}
+
+
+
+This is a comment file I have for this code:
+
+“
+
+To perform the same task in CATIA V5, the overall programmatic logic remains the same, but the implementation differs due to how the CATIA COM API and document link engine operate:
+
+- Active Session Required: Unlike SOLIDWORKS, which has a dedicated offline method (ReplaceReferencedDocument) to modify closed files on disk[1], CATIA requires the document to be opened in the active session (Documents.Open)[2] to replace its referenced links[3].
+
+- Handling Broken Links: If the parts are already moved or renamed, their links will show up as broken (missing) in CATIA[4]. When a link is broken, querying the file path property (child.ReferenceProduct.Parent.FullName) will fail and throw a COM exception[4]. However, CATIA caches the PartNumber (the reference name, which usually matches the file name without extension) inside the .CATProduct file[4]. The program below relies on this PartNumber to map your broken links to your new file paths[4].
+
+- Reference Replacement: The equivalent method in CATIA is Products.ReplaceComponent[5]. It takes the old child component, the new absolute file path, and a boolean flag (true to replace all instances of this component in the assembly)[6].
+
+Setup Instructions in Visual Studio:
+
+- Create a new C# Console App (.NET Framework) project.
+
+- Right-click on References and select Add Reference....
+
+- Go to the COM tab on the left and search for / check the following:
+
+    - INFITF Type Library (corresponds to INFITF)
+
+    - ProductStructureTypeLib (corresponds to ProductStructureTypeLib)
+
+- In your Solution Explorer, select the newly added assemblies in your References list, open their Properties panel, and change Embed Interop Types to False.
+
+- Build and run.
+
+“
+
+I need to create a CatUtils class just like what I have for Solid as the following
+
+
+
+using SolidRefrenceRename.WPFUI.Models;
+
+using SolidWorks.Interop.sldworks;
+
+using SolidWorks.Interop.swconst;
+
+using System;
+
+using System.Collections.Generic;
+
+using System.Data.Entity.Infrastructure;
+
+using System.IO;
+
+using System.Linq;
+
+using System.Runtime.InteropServices;
+
+using System.Text;
+
+using System.Threading.Tasks;
+
+namespace SolidRefrenceRename.WPFUI.Lib
+
+{
+
+    public class SolidUtils
+
+    {
+
+        private static SldWorks swApp;
+
+        private static ModelDoc2 swModel;
+
+        
+
+        public static PartChangingOutput ChangePartAddress(string currentAssemblyPath, Dictionary<string, string> newPartAddressMap)
+
+        {
+
+            List<ProcessOutputDetails> errorsList = new List<ProcessOutputDetails>();
+
+            List<string> newAssembliesFound = new List<string>();
+
+            List<string> convertedItems = new List<string>();
+
+            try
+
+            {
+
+                try
+
+                {
+
+                    swApp = (SldWorks)Marshal.GetActiveObject("SldWorks.Application");
+
+                    Console.WriteLine("Connected to running SOLIDWORKS instance.");
+
+                }
+
+                catch (COMException)
+
+                {
+
+                    Console.WriteLine("SOLIDWORKS is not running. Starting a new session...");
+
+                    Type swType = Type.GetTypeFromProgID("SldWorks.Application");
+
+                    swApp = (SldWorks)Activator.CreateInstance(swType);
+
+                    swApp.Visible = true; // Set to false if you want it to run completely in the background
+
+                }
+
+                if (swApp == null)
+
+                {
+
+                    var errorStr = "Failed to initialize SOLIDWORKS application.";
+
+                    return new PartChangingOutput()
+
+                    {
+
+                        Succeed=false,
+
+                        Errors= new List<ProcessOutputDetails>() { new ProcessOutputDetails(errorStr, currentAssemblyPath) },
+
+                        NewAssembliesFound=null
+
+                    };
+
+                    //return (false, new List<ProcessOutputDetails>() { new ProcessOutputDetails(errorStr, currentAssemblyPath) }, null);
+
+                }
+
+                // Standardize path casings and slashes in our map to ensure accurate lookups
+
+                var normalizedRenameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var kvp in newPartAddressMap)
+
+                {
+
+                    normalizedRenameMap[NormalizePath(kvp.Key)] = NormalizePath(kvp.Value);
+
+                }
+
+                // Get direct dependencies of the current assembly                   
+
+                // Traverseflag = false (we process level-by-level), Searchflag = true, AddReadOnlyInfo = false
+
+                object dependsObj = swApp.GetDocumentDependencies2(currentAssemblyPath, false, true, false);
+
+                if (dependsObj == null)
+
+                {
+
+                    var errorStr = "  No dependencies found or unable to access dependencies.";
+
+                    return new PartChangingOutput()
+
+                    {
+
+                        Succeed = false,
+
+                        Errors = new List<ProcessOutputDetails>() { new ProcessOutputDetails(errorStr, currentAssemblyPath) },
+
+                        NewAssembliesFound = null
+
+                    };
+
+                    //return (false, new List<ProcessOutputDetails>() { new ProcessOutputDetails(errorStr, currentAssemblyPath) }, null);
+
+                }
+
+                // GetDocumentDependencies2 returns an array where:                   
+
+                // Index [0, 2, 4...] is the short name, Index [1, 3, 5...] is the full absolute path
+
+                Array dependsArray = (Array)dependsObj;
+
+                for (int i = 1; i < dependsArray.Length; i += 2)
+
+                {
+
+                    string oldDependencyPath = NormalizePath(dependsArray.GetValue(i) as string);
+
+                    if (string.IsNullOrEmpty(oldDependencyPath)) continue;
+
+                    string componentName = Path.GetFileName(oldDependencyPath);
+
+                    // Case 1: The dependency is a renamed/relocated part or subassembly
+
+                    if (normalizedRenameMap.TryGetValue(componentName, out string newDependencyPath))
+
+                    {
+
+                        if (newDependencyPath != oldDependencyPath)
+
+                        {
+
+                            Console.WriteLine($"  Replacing: {Path.GetFileName(oldDependencyPath)}");
+
+                            Console.WriteLine($"    Old: {oldDependencyPath}");
+
+                            Console.WriteLine($"    New: {newDependencyPath}");
+
+                        }
+
+                        else
+
+                        {
+
+                            Console.WriteLine($" No need to relpace: Source and destinations are the same: {newDependencyPath}");
+
+                            continue;
+
+                        }
+
+                        // Execute the reference replacement
+
+                        bool success = swApp.ReplaceReferencedDocument(currentAssemblyPath, oldDependencyPath, newDependencyPath);
+
+                        if (success)
+
+                        {
+
+                            Console.WriteLine("    -> Success!");
+
+                            convertedItems.Add(oldDependencyPath);
+
+                            // If the dependency we just replaced is itself an assembly, we queue its NEW path for processing
+
+                            if (IsAssemblyFile(newDependencyPath))
+
+                            {
+
+                                newAssembliesFound.Add(newDependencyPath);
+
+                            }
+
+                        }
+
+                        else
+
+                        {
+
+                            var errorStr = "    -> Failed. Ensure the assembly is not open in SOLIDWORKS.";
+
+                            Console.WriteLine(errorStr);
+
+                            return new PartChangingOutput()
+
+                            {
+
+                                Succeed = false,
+
+                                Errors = new List<ProcessOutputDetails>() { new ProcessOutputDetails(errorStr, currentAssemblyPath) },
+
+                                NewAssembliesFound = null
+
+                            };
+
+                            //return (false, new List<ProcessOutputDetails>() { new ProcessOutputDetails(errorStr, currentAssemblyPath) }, null);
+
+                        }
+
+                    }
+
+                    else
+
+                    {
+
+                        // Case 2: The dependency is an assembly that was NOT renamed, but we still need to scan it for renamed parts
+
+                        if (IsAssemblyFile(oldDependencyPath))
+
+                        {
+
+                            newAssembliesFound.Add(oldDependencyPath);
+
+                        }
+
+                    }
+
+                }
+
+                return new PartChangingOutput()
+
+                {
+
+                    Succeed = convertedItems.Any(),
+
+                    Errors = errorsList,
+
+                    NewAssembliesFound = newAssembliesFound
+
+                };
+
+                //return (convertedItems.Any(), errorsList, newAssembliesFound);
+
+            }
+
+            catch (Exception ex)
+
+            {
+
+                var errorStr = $"Error: {ex.Message}";
+
+                Console.WriteLine(errorStr);
+
+                return new PartChangingOutput()
+
+                {
+
+                    Succeed = false,
+
+                    Errors = new List<ProcessOutputDetails>() { new ProcessOutputDetails(errorStr, currentAssemblyPath) },
+
+                    NewAssembliesFound = null
+
+                };
+
+               // return (false, new List<ProcessOutputDetails>() { new ProcessOutputDetails(errorStr, currentAssemblyPath) }, null);
+
+            }
+
+            finally
+
+            {
+
+                //Cleanup
+
+            }
+
+        }
+
+        public static void DoCleanUp()
+
+        {
+
+            if (swApp != null)
+
+                swApp.ExitApp();
+
+        }
+
+        private static string NormalizePath(string path)
+
+        {
+
+            if (string.IsNullOrEmpty(path))
+
+                return string.Empty;
+
+            //try
+
+            //{
+
+            //    return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+            //}
+
+            //catch { return path; }
+
+            return path.ToUpper().Trim();
+
+        }
+
+        private static bool IsAssemblyFile(string path)
+
+        {
+
+            string ext = Path.GetExtension(path);
+
+            return string.Equals(ext, ".sldasm", StringComparison.OrdinalIgnoreCase);
+
+        }
+
+    }
+
+}
+
+
+
+
+

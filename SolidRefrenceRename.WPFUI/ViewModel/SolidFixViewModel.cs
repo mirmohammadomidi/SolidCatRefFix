@@ -1,0 +1,272 @@
+﻿using CatiaReferenceRename.WPFUI.Lib;
+using CommunityToolkit.Mvvm.ComponentModel;
+using SolidRefrenceRename.WPFUI.Data;
+using SolidRefrenceRename.WPFUI.Data.Entities;
+using SolidRefrenceRename.WPFUI.Lib;
+using SolidRefrenceRename.WPFUI.Models;
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Data.Entity;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows;
+
+namespace SolidRefrenceRename.WPFUI.ViewModel
+{
+    public partial class SolidFixViewModel : ObservableObject
+    {
+        public ObservableCollection<ProcessOutputDetails> Errors { get; } = new ObservableCollection<ProcessOutputDetails>();
+        public event EventHandler<int> OnNumberOfAssembliesChanged;
+        public event EventHandler<int> OnNumberOfPartsChanged;
+        public event EventHandler<int> OnNumberOfDrawingsChanged;
+        public event EventHandler<(int assemblyIndex, string currentItem)> OnItemBeingFixed;
+        public event EventHandler<string> EventLogged;
+        private bool _isRunning;
+        public bool IsRunning
+        {
+            get => _isRunning;
+            set => SetProperty(ref _isRunning, value);   // CommunityToolkit.Mvvm helper
+        }
+        public SolidFixViewModel()
+        {
+            CatiaUtils.LogErrors += CatiaUtils_LogErrors;
+        }
+
+        private void CatiaUtils_LogErrors(object sender, string e)
+        {
+            if (EventLogged != null)
+            {
+                EventLogged(sender, e);
+            }
+        }
+
+        public async Task StartFixing(SoftwareType softwareType, List<string> fileNamesToInclude = null, string patternToMatchAllFolderAddressWith = null, string replaceAllFolderAddressWith = null)
+        {
+            //if (!string.IsNullOrWhiteSpace(convertAllDestinationFilesToFolder))
+            //{
+            //    if (!convertAllDestinationFilesToFolder.EndsWith(Path.DirectorySeparatorChar.ToString())
+            //        && !convertAllDestinationFilesToFolder.EndsWith(Path.AltDirectorySeparatorChar.ToString()))
+            //    {
+            //        convertAllDestinationFilesToFolder += Path.DirectorySeparatorChar.ToString();
+            //    }
+            //}
+            Errors.Clear();
+            using (var context = new IFSCodeCleansingDBContext(App.DefaultConnectionString))
+            {
+                try
+                {
+                    await Task.Run(async () =>
+                    {
+                        List<DocFileView> allAssemblies;
+                        if (softwareType == SoftwareType.Solid)
+                        {
+                            allAssemblies = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "SLDASM").ToListAsync();
+                        }
+                        else
+                        {
+                            allAssemblies = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATPRODUCT").ToListAsync();
+                        }
+                        if (fileNamesToInclude != null && fileNamesToInclude.Any())
+                        {
+                            List<string> fileNamesToIncludeNormalized = new List<string>();
+                            foreach (var file in fileNamesToInclude)
+                            {
+                                fileNamesToIncludeNormalized.Add(file.ToUpper().Trim());
+                            }
+                            allAssemblies = allAssemblies.Where(uu => fileNamesToIncludeNormalized.Contains(uu.FileName.ToUpper())).ToList();
+                        }
+                        if (OnNumberOfAssembliesChanged != null)
+                            OnNumberOfAssembliesChanged(this, allAssemblies.Count);
+
+
+                        var partDict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        List<DocFileView> allParts;
+                        if (softwareType == SoftwareType.Solid)
+                        {
+                            allParts = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "SLDPRT" || uu.EXTENSION.ToUpper() == "SLDASM").ToListAsync();
+                        }
+                        else
+                        {
+                            allParts = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATPART" || uu.EXTENSION.ToUpper() == "CATPRODUCT").ToListAsync();
+                        }
+                        if (OnNumberOfPartsChanged != null)
+                            OnNumberOfPartsChanged(this, allParts.Count);
+                        List<DocFileView> allDrawings;
+                        if (softwareType == SoftwareType.Solid)
+                        {
+                            allDrawings = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "SLDDRW").ToListAsync();
+                        }
+                        else
+                        {
+                            allDrawings = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATDRAWING").ToListAsync();
+                        }
+                        if (fileNamesToInclude != null && fileNamesToInclude.Any())
+                        {
+                            List<string> fileNamesToIncludeNormalized = new List<string>();
+                            foreach (var file in fileNamesToInclude)
+                            {
+                                fileNamesToIncludeNormalized.Add(file.ToUpper().Trim());
+                            }
+                            allDrawings = allDrawings.Where(uu => fileNamesToIncludeNormalized.Contains(uu.FileName.ToUpper())).ToList();
+                        }
+
+                        if (OnNumberOfDrawingsChanged != null)
+                            OnNumberOfDrawingsChanged(this, allDrawings.Count);
+                        try
+                        {
+                            foreach (var part in allParts)
+                            {
+                                string partName = $"{part.SourceFileName}.{part.EXTENSION}".ToUpper().Trim();
+                                if (!partDict.ContainsKey(partName))
+                                {
+                                    if (!string.IsNullOrWhiteSpace(part.DestinationFileAddress))
+                                    {
+                                        if (string.IsNullOrWhiteSpace(replaceAllFolderAddressWith))
+                                        {
+                                            partDict.Add(partName, part.DestinationFileAddress);
+                                        }
+                                        else
+                                        {
+                                            var fileName = Path.GetFileName(part.DestinationFileAddress);
+                                            partDict.Add(partName, part.DestinationFileAddress.Replace(patternToMatchAllFolderAddressWith, replaceAllFolderAddressWith));
+                                        }
+                                    }
+                                    else
+                                    {
+                                        Application.Current.Dispatcher.Invoke(() =>
+                                        {
+                                            var errorStr = $"Part does not have address in DB";
+                                            Console.WriteLine(errorStr);
+                                            Errors.Add(new ProcessOutputDetails(errorStr)
+                                            {
+                                                PartName = partName,
+                                            });
+                                        });
+
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Application.Current.Dispatcher.Invoke(() =>
+                            {
+                                var errorStr = ex.Message;
+                                Console.WriteLine(errorStr);
+                                Errors.Add(new ProcessOutputDetails(errorStr));
+                            });
+                        }
+                        int assembliesCount = 0;
+                        List<string> assemblyList;
+                        if (string.IsNullOrWhiteSpace(replaceAllFolderAddressWith))
+                        {
+                            assemblyList = allAssemblies.Select(uu => uu.DestinationFileAddress).ToList();
+                            var v2 = allDrawings.Select(uu => uu.DestinationFileAddress).ToList();
+                            assemblyList.AddRange(v2);
+                        }
+                        else
+                        {
+                            assemblyList = allAssemblies.Select(uu => uu.DestinationFileAddress.Replace(patternToMatchAllFolderAddressWith, replaceAllFolderAddressWith)).ToList();
+                            var v2 = assemblyList = allAssemblies.Select(uu => uu.DestinationFileAddress.Replace(patternToMatchAllFolderAddressWith, replaceAllFolderAddressWith)).ToList();
+                            assemblyList.AddRange(v2);
+                        }
+
+                        Queue<string> assembliesToProcess = new Queue<string>(assemblyList);
+                        HashSet<string> processedAssemblies = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        while (assembliesToProcess.Count > 0)
+                        //foreach (var part in allAssemblies)
+                        {
+                            string currentAssemblyPath = assembliesToProcess.Dequeue();
+                            if (processedAssemblies.Contains(currentAssemblyPath)) continue;
+                            if (!File.Exists(currentAssemblyPath))
+                            {
+                                var errorStr = $"Assembly not found on disk: {currentAssemblyPath}";
+                                Console.WriteLine(errorStr);
+                                Application.Current.Dispatcher.Invoke(() =>
+                                {
+                                    Errors.Add(new ProcessOutputDetails(errorStr));
+                                });
+                                continue;
+                            }
+                            assembliesCount++;
+                            if (OnItemBeingFixed != null)
+                            {
+                                OnItemBeingFixed(this, (assembliesCount, currentAssemblyPath));
+                            }
+                            Console.WriteLine($"\nProcessing assembly: {currentAssemblyPath}");
+                            processedAssemblies.Add(currentAssemblyPath);
+                            PartChangingOutput g=null;
+                            if (softwareType == SoftwareType.Solid)
+                            {
+                               // g = SolidUtils.ChangePartAddress(currentAssemblyPath, partDict);
+                            }
+                            else
+                            {
+                                g = CatiaUtils.ChangePartAddress(currentAssemblyPath, partDict);
+                            }
+                            Application.Current.Dispatcher.Invoke(() =>
+                            {
+                                foreach (var error in g.Errors)
+                                {
+                                    Errors.Add(error);
+                                }
+                            });
+
+                            if (g.NewAssembliesFound != null && g.NewAssembliesFound.Any())
+                            {
+                                foreach (var assembly in g.NewAssembliesFound)
+                                {
+                                    assembliesToProcess.Enqueue(assembly);
+                                    if (OnNumberOfAssembliesChanged != null)
+                                        OnNumberOfAssembliesChanged(this, allAssemblies.Count);
+                                }
+                            }
+
+                        }
+                    });
+
+                }
+                catch (Exception ex)
+                {
+
+                    // Handle exception
+                    var errorStr = $"Error reading parts: {ex.Message}";
+                    Console.WriteLine(errorStr);
+                    Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        Errors.Add(new ProcessOutputDetails(errorStr));
+                    });
+
+                }
+                finally
+                {
+                    //SolidUtils.DoCleanUp();
+                    CatiaUtils.DoCleanUp();
+                }
+            }
+
+        }
+
+        public async Task CatiaTest(string targetFile = null, Dictionary<string, string> sourceFiles = null)
+        {
+            IsRunning = true;
+            if (targetFile == null)
+            {
+                targetFile = "D:\\catia\\PIC AFTER\\1405-ASSEMBLY1-FA2.CATProduct";
+            }
+            if (sourceFiles == null)
+            {
+                sourceFiles = new Dictionary<string, string>()
+                    {
+                        { "Part1.CATPart","D:\\catia\\PIC AFTER\\1405-Part1-F1.CATPart" },
+                        { "Part2.CATPart","D:\\catia\\PIC AFTER\\1405-Part2-F2.CATPart" }
+                    };
+            }
+            PartChangingOutput g = CatiaUtils.ChangePartAddress(targetFile, sourceFiles);
+            IsRunning = false;
+        }
+    }
+}

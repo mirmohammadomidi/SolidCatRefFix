@@ -1,0 +1,833 @@
+﻿using INFITF;
+using ProductStructureTypeLib;
+using SolidRefrenceRename.WPFUI.Lib;
+using SolidRefrenceRename.WPFUI.Models;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
+
+namespace CatiaReferenceRename.WPFUI.Lib
+{
+    public class CatiaUtils
+    {
+        private static INFITF.Application catiaApp;
+        private static ProductDocument productDoc;
+
+        #region Public API -----------------------------------------------------
+
+        /// <summary>
+        /// Opens a CATIA product (*.CATProduct) or drawing (*.CATDrawing) and
+        /// replaces every referenced part/assembly whose path is present in
+        /// <paramref name="newPartAddressMap"/>.  Returns a structure that tells
+        /// the caller whether the operation succeeded, what errors (if any) were
+        /// encountered and which files have to be processed next.
+        /// </summary>
+        public static PartChangingOutput ChangePartAddress(
+            string currentAssemblyPath,
+            Dictionary<string, string> newPartAddressMap)
+        {
+            var errorsList = new List<ProcessOutputDetails>();
+            var newAssembliesFound = new List<string>();
+            var convertedItems = new List<string>();
+
+            try
+            {
+                // -------------------------------------------------------------
+                // 1️⃣  Initialise / attach to a CATIA session
+                // -------------------------------------------------------------
+                if (!TryInitCatia())
+                {
+                    return Fail("Failed to initialise CATIA.", currentAssemblyPath);
+                }
+
+                // -------------------------------------------------------------
+                // 2️⃣  Normalise the rename map (case‑insensitive, slashes, etc.)
+                // -------------------------------------------------------------
+                var renameMap = NormaliseRenameMap(newPartAddressMap);
+
+                // -------------------------------------------------------------
+                // 3️⃣  Validate the input file
+                // -------------------------------------------------------------
+                if (!System.IO.File.Exists(currentAssemblyPath))
+                {
+                    return Fail($"Assembly not found on disk: {currentAssemblyPath}", currentAssemblyPath);
+                }
+
+                // -------------------------------------------------------------
+                // 4️⃣  Dispatch to the proper handler (product vs drawing)
+                // -------------------------------------------------------------
+                string ext = Path.GetExtension(currentAssemblyPath).ToLowerInvariant();
+
+                if (ext == ".catproduct")
+                {
+                    ProcessProduct(currentAssemblyPath, renameMap,
+                                   convertedItems, newAssembliesFound);
+                }
+                else if (ext == ".catdrawing")
+                {
+                    ProcessDrawing(currentAssemblyPath, renameMap,
+                                   convertedItems, newAssembliesFound);
+                }
+                else
+                {
+                    return Fail($"Unsupported file type \"{ext}\".", currentAssemblyPath);
+                }
+
+                // -------------------------------------------------------------
+                // 5️⃣  Return the result
+                // -------------------------------------------------------------
+                return new PartChangingOutput
+                {
+                    Succeed = true,
+                    Errors = errorsList,
+                    NewAssembliesFound = newAssembliesFound
+                };
+            }
+            catch (Exception ex)
+            {
+                return Fail($"Unexpected error: {ex.Message}", currentAssemblyPath);
+            }
+            finally
+            {
+                // NOTE: the CATIA instance lives outside of this class – we do NOT
+                // quit the application here.
+            }
+        }
+
+        #endregion ------------------------------------------------------------
+
+        #region ──  Private helpers for the public entry point  ─────────────────
+
+        private static bool TryInitCatia()
+        {
+            try
+            {
+                catiaApp = (INFITF.Application)Marshal.GetActiveObject("CATIA.Application");
+                Console.WriteLine("Connected to a running CATIA instance.");
+                return true;
+            }
+            catch (COMException)
+            {
+                Console.WriteLine("CATIA not running – launching a new background session.");
+                try
+                {
+                    Type catiaType = Type.GetTypeFromProgID("CATIA.Application");
+                    catiaApp = (INFITF.Application)Activator.CreateInstance(catiaType);
+                    catiaApp.Visible = true;
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Failed to start CATIA: {ex.Message}");
+                    return false;
+                }
+            }
+        }
+
+        private static Dictionary<string, string> NormaliseRenameMap(
+            Dictionary<string, string> rawMap)
+        {
+            var norm = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kvp in rawMap)
+            {
+                norm[NormalizePath(kvp.Key)] = NormalizePath(kvp.Value);
+            }
+            return norm;
+        }
+
+        private static PartChangingOutput Fail(string message, string filePath)
+        {
+            Console.WriteLine(message);
+            return new PartChangingOutput
+            {
+                Succeed = false,
+                Errors = new List<ProcessOutputDetails> { new ProcessOutputDetails(message, filePath) },
+                NewAssembliesFound = null
+            };
+        }
+
+        #endregion ------------------------------------------------------------
+
+        #region ──  Product (CATProduct) handling  ───────────────────────────────
+
+        private static void ProcessProduct(
+            string productPath,
+            Dictionary<string, string> renameMap,
+            List<string> convertedItems,
+            List<string> newAssembliesFound)
+        {
+            Console.WriteLine($"\nOpening assembly: {productPath}");
+
+            productDoc = null;
+            try
+            {
+                productDoc = (ProductDocument)catiaApp.Documents.Open(productPath);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Failed to open assembly: {ex.Message}");
+            }
+
+            if (productDoc == null)
+                throw new Exception("ProductDocument returned null after opening.");
+
+            var rootProduct = productDoc.Product;
+            var alreadyReplaced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            ReplaceReferencesInProduct(rootProduct, renameMap, alreadyReplaced, convertedItems);
+
+            // Save & close -------------------------------------------------
+            try
+            {
+                productDoc.Save();
+                Console.WriteLine("Assembly saved successfully.");
+            }
+            finally
+            {
+                productDoc.Close();
+            }
+
+            // The file we just processed must be fed back to the caller so
+            // that a possible caller‑side loop can continue with the next item.
+            newAssembliesFound.Add(productPath);
+        }
+
+        /// <summary>
+        /// Recursively walks a Product tree and replaces every child component
+        /// whose file name matches a key in <paramref name="renameMap"/>.
+        /// </summary>
+        private static void ReplaceReferencesInProduct(
+            Product currentProduct,
+            Dictionary<string, string> renameMap,
+            HashSet<string> replacedPartNumbers,
+            List<string> convertedItems)
+        {
+            Products childProducts = currentProduct.Products;
+            if (childProducts == null) return;
+
+            // -------------------------------------------------------------
+            // 1️⃣  Build two temporary lists – we never modify the COM
+            //     collection while we iterate it.
+            // -------------------------------------------------------------
+            var toReplace = new List<Product>();
+            var toRecurse = new List<Product>();
+
+            int count = childProducts.Count;
+            for (int i = 1; i <= count; i++)
+            {
+                try
+                {
+                    dynamic child = childProducts.Item(i);
+                    string partNumber = child.Name;
+                    if (string.IsNullOrWhiteSpace(partNumber)) continue;
+
+                    // Strip the trailing “.n” that CATIA adds for duplicated
+                    // instances (e.g. Part1.1, Part1.2, …)
+                    partNumber = StripInstanceSuffix(partNumber);
+
+                    // Is there a mapping for this part?
+                    string oldKey = FindMatchingKeyInMap(partNumber, renameMap);
+                    if (oldKey != null && !replacedPartNumbers.Contains(partNumber))
+                    {
+                        toReplace.Add(child);
+                    }
+                    else
+                    {
+                        // Might be a sub‑assembly – check if it itself contains children
+                        bool hasChildren = false;
+                        try { hasChildren = child.Products != null && child.Products.Count > 0; }
+                        catch { /* ignore */ }
+
+                        if (hasChildren) toRecurse.Add(child);
+                    }
+                }
+                catch (COMException) { /* ignore transient COM issues */ }
+            }
+
+            // -------------------------------------------------------------
+            // 2️⃣  Perform the actual replacements
+            // -------------------------------------------------------------
+            foreach (dynamic child in toReplace)
+            {
+                try
+                {
+                    string partNumber = StripInstanceSuffix(child.Name);
+                    string oldKey = FindMatchingKeyInMap(partNumber, renameMap);
+                    if (oldKey == null) continue;               // should not happen
+
+                    string newPath = renameMap[oldKey];
+                    Console.WriteLine($"  Replacing component: {partNumber}");
+                    Console.WriteLine($"    Old Path: {oldKey}");
+                    Console.WriteLine($"    New Path: {newPath}");
+
+                    // true => propagate to every other instance of this component
+                    childProducts.ReplaceComponent(child, newPath, true);
+
+                    replacedPartNumbers.Add(partNumber);
+                    convertedItems.Add(oldKey);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"    Failed to replace reference: {ex.Message}");
+                }
+            }
+
+            // -------------------------------------------------------------
+            // 3️⃣  Recurse into sub‑assemblies
+            // -------------------------------------------------------------
+            foreach (Product sub in toRecurse)
+            {
+                try
+                {
+                    // Guard against a sub‑assembly that has just been replaced
+                    // (its COM proxy would throw).
+                    string _ = sub.get_Name(); // will throw if the object is dead
+                    ReplaceReferencesInProduct(sub, renameMap, replacedPartNumbers, convertedItems);
+                }
+                catch (COMException) { /* ignore dead objects */ }
+            }
+        }
+
+        #endregion ------------------------------------------------------------
+
+        #region ──  Drawing (CATDrawing) handling  ───────────────────────────────
+
+        private static void ProcessDrawing(
+            string drawingPath,
+            Dictionary<string, string> renameMap,
+            List<string> convertedItems,
+            List<string> newAssembliesFound)
+        {
+            Console.WriteLine($"\nOpening drawing: {drawingPath}");
+
+            // -----------------------------------------------------------------
+            // 0️⃣  If the old files have already been moved, CATIA cannot load
+            //     the referenced documents anymore – every view link is broken
+            //     and GenerativeBehavior.Document throws.  Therefore we
+            //     materialise a *temporary* copy of each moved file at its old
+            //     location so that CATIA can resolve the stored links.  The
+            //     copies are deleted again in the finally‑block below.
+            // -----------------------------------------------------------------
+            var placeholders = CreatePlaceholdersForMissingLinks(renameMap);
+            var createdPlaceholders = placeholders.Item1;
+            var unavailableKeys = placeholders.Item2;
+
+            // -----------------------------------------------------------------
+            // 1️⃣  GenerativeBehavior.Document only works when the pointed
+            //     document is actually LOADED in the session (“The method
+            //     Document failed” otherwise).  Depending on the CATIA settings
+            //     (e.g. “Load referenced documents” switched off) opening the
+            //     drawing alone does NOT load them – so we open every candidate
+            //     old document explicitly BEFORE the drawing, and the drawing
+            //     will then bind its links to these session documents.
+            // -----------------------------------------------------------------
+            var preloadedPaths = PreloadOldDocuments(renameMap, unavailableKeys);
+
+            dynamic drawingDoc = null; // we use dynamic to avoid pulling in a second interop assembly
+            try
+            {
+                try
+                {
+                    drawingDoc = catiaApp.Documents.Open(drawingPath);
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception($"Failed to open drawing: {ex.Message}");
+                }
+
+                if (drawingDoc == null)
+                    throw new Exception("DrawingDocument returned null after opening.");
+
+                // -------------------------------------------------------------
+                // 2️⃣  Read phase – walk every sheet → every view and collect the
+                //     work items (view + old path + new path).  Nothing is
+                //     modified yet.
+                // -------------------------------------------------------------
+                var workList = CollectDrawingWorkItems(drawingDoc, renameMap, unavailableKeys);
+
+                // -------------------------------------------------------------
+                // 3️⃣  Swap the documents in the CATIA session.  CATIA cannot
+                //     hold two documents with the same file name at once and the
+                //     moved files share their names with the old ones – so the
+                //     old documents must be closed BEFORE the new ones open.
+                // -------------------------------------------------------------
+                var newDocs = LoadReplacementDocuments(workList);
+
+                // -------------------------------------------------------------
+                // 4️⃣  Assign the new documents to the collected views.
+                // -------------------------------------------------------------
+                ApplyDrawingReplacements(workList, newDocs, convertedItems);
+
+                // -------------------------------------------------------------
+                // 5️⃣  Regenerate the views from their new 3D documents & save.
+                // -------------------------------------------------------------
+                try
+                {
+                    drawingDoc.Update();
+                }
+                catch (Exception ex)
+                {
+                    // The links themselves are still valid and will be saved –
+                    // a failed update only means the geometry was not regenerated.
+                    Console.WriteLine($"    Drawing update failed: {ex.Message}");
+                }
+
+                drawingDoc.Save();
+                Console.WriteLine("Drawing saved successfully.");
+            }
+            finally
+            {
+                // 6️⃣  Cleanup: close the drawing, close every old document that
+                //     we pre‑loaded (otherwise the placeholder files stay locked)
+                //     and finally remove the temporary placeholder files.
+                try { drawingDoc?.Close(); } catch { /* ignore */ }
+                CloseDocumentsByFullPath(preloadedPaths);
+                DeletePlaceholders(createdPlaceholders);
+            }
+
+            newAssembliesFound.Add(drawingPath);
+        }
+
+        /// <summary>
+        /// Opens every old document of the rename map that exists on disk (either
+        /// the original file or the temporary placeholder), so the view links of
+        /// the drawing bind to loaded session documents and
+        /// <c>GenerativeBehavior.Document</c> becomes readable.
+        /// Returns the (normalised) paths that were pre‑loaded.
+        /// </summary>
+        private static List<string> PreloadOldDocuments(
+            Dictionary<string, string> renameMap,
+            HashSet<string> unavailableKeys)
+        {
+            var preloaded = new List<string>();
+            foreach (var kvp in renameMap)
+            {
+                string oldPath = kvp.Key;
+                if (unavailableKeys.Contains(oldPath)) continue;
+                if (!System.IO.File.Exists(oldPath)) continue;
+
+                try
+                {
+                    catiaApp.Documents.Open(oldPath);
+                    preloaded.Add(oldPath);
+                    Console.WriteLine($"  Pre-loaded linked document: {oldPath}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"    Could not pre-load '{oldPath}': {ex.Message}");
+                }
+            }
+            return preloaded;
+        }
+
+        /// <summary>
+        /// One pending view replacement: the view object plus its current
+        /// (old) reference path and the new path it must point to.
+        /// </summary>
+        private class DrawingWorkItem
+        {
+            public dynamic View;
+            public string SheetName;
+            public string OldPath;
+            public string NewPath;
+        }
+
+        /// <summary>
+        /// Walks every sheet → every view of the drawing and collects the views
+        /// whose current 3D reference matches a key of <paramref name="renameMap"/>.
+        /// Nothing is modified at this stage.
+        /// </summary>
+        private static List<DrawingWorkItem> CollectDrawingWorkItems(
+            dynamic drawingDoc,
+            Dictionary<string, string> renameMap,
+            HashSet<string> unavailableKeys)
+        {
+            var workList = new List<DrawingWorkItem>();
+            var knownNewPaths = new HashSet<string>(renameMap.Values, StringComparer.OrdinalIgnoreCase);
+
+            dynamic sheets = drawingDoc.Sheets;
+            int sheetCount = sheets.Count;
+            for (int s = 1; s <= sheetCount; s++)
+            {
+                dynamic sheet = sheets.Item(s);
+                dynamic views = sheet.Views;
+                int viewCount = views.Count;
+
+                for (int v = 1; v <= viewCount; v++)
+                {
+                    dynamic view = views.Item(v);
+                    try
+                    {
+                        // -----------------------------------------------------
+                        // 1️⃣  Get the current reference path (if any)
+                        // -----------------------------------------------------
+                        string oldPath = GetReferencePath(view);
+                        if (string.IsNullOrWhiteSpace(oldPath))
+                        {
+                            // Main/Background views and pure 2D views have no 3D
+                            // link – for generative views this means the pointed
+                            // document could not be loaded.
+                            Console.WriteLine($"    View \"{GetViewNameSafe(view)}\" on sheet \"{sheet.Name}\" has no readable 3D link - skipped.");
+                            continue;
+                        }
+
+                        // -----------------------------------------------------
+                        // 2️⃣  The view may already point at one of the *new*
+                        //     files (e.g. CATIA resolved the link against a
+                        //     document that was already open in the session).
+                        // -----------------------------------------------------
+                        if (knownNewPaths.Contains(oldPath))
+                        {
+                            Console.WriteLine($"  View on sheet \"{sheet.Name}\" is already up-to-date: {oldPath}");
+                            continue;
+                        }
+
+                        // -----------------------------------------------------
+                        // 3️⃣  See whether we have a replacement for it
+                        // -----------------------------------------------------
+                        string matchingKey = renameMap.ContainsKey(oldPath)
+                            ? oldPath
+                            : FindMatchingKeyInMap(Path.GetFileNameWithoutExtension(oldPath), renameMap);
+                        if (matchingKey == null) continue;                    // no entry for this view
+                        if (unavailableKeys.Contains(matchingKey)) continue;  // placeholder could not be created
+
+                        string newPath = renameMap[matchingKey];
+                        if (string.Equals(oldPath, newPath, StringComparison.OrdinalIgnoreCase)) continue;
+
+                        workList.Add(new DrawingWorkItem
+                        {
+                            View = view,
+                            SheetName = sheet.Name,
+                            OldPath = oldPath,
+                            NewPath = newPath
+                        });
+                    }
+                    catch (COMException comEx)
+                    {
+                        Console.WriteLine($"    COM issue on view {v}: {comEx.Message}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"    Unexpected issue on view {v}: {ex.Message}");
+                    }
+                }
+            }
+            return workList;
+        }
+
+        /// <summary>
+        /// Returns the name of a drawing view without ever throwing.
+        /// </summary>
+        private static string GetViewNameSafe(dynamic view)
+        {
+            try { return (string)view.Name; }
+            catch { return "?"; }
+        }
+
+        /// <summary>
+        /// Closes the old documents and opens the new ones in the CATIA session.
+        /// CATIA does not allow two documents with the same file name in one
+        /// session, so the order (close old → open new) is essential.
+        /// Returns a lookup of newPath → opened document.
+        /// </summary>
+        private static Dictionary<string, dynamic> LoadReplacementDocuments(
+            List<DrawingWorkItem> workList)
+        {
+            var newDocs = new Dictionary<string, dynamic>(StringComparer.OrdinalIgnoreCase);
+            if (workList.Count == 0) return newDocs;
+
+            // 1️⃣  Close the old documents (they share their file names with
+            //     the moved files).
+            CloseDocumentsByFullPath(workList.Select(w => w.OldPath).Distinct(StringComparer.OrdinalIgnoreCase));
+
+            // 2️⃣  Open the new documents.
+            foreach (string newPath in workList.Select(w => w.NewPath).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    dynamic doc = GetOrOpenDocument(newPath);
+
+                    // Safety: if the old document could not be closed, CATIA
+                    // silently returns it again (name conflict) – detect that.
+                    string loadedPath = NormalizePath((string)doc.FullName);
+                    if (!string.Equals(loadedPath, newPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Console.WriteLine($"    ERROR: name conflict – the session returned '{loadedPath}' instead of '{newPath}'. Close the old document in CATIA and retry.");
+                        continue;
+                    }
+                    newDocs[newPath] = doc;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"    Failed to open '{newPath}': {ex.Message}");
+                }
+            }
+            return newDocs;
+        }
+
+        /// <summary>
+        /// Points every collected view at its new (already loaded) document.
+        /// </summary>
+        private static void ApplyDrawingReplacements(
+            List<DrawingWorkItem> workList,
+            Dictionary<string, dynamic> newDocs,
+            List<string> convertedItems)
+        {
+            foreach (var item in workList)
+            {
+                try
+                {
+                    if (!newDocs.TryGetValue(item.NewPath, out dynamic newDoc))
+                    {
+                        Console.WriteLine($"    Skipped – new document not loaded: {item.NewPath}");
+                        continue;
+                    }
+
+                    Console.WriteLine($"  Replacing view reference on sheet \"{item.SheetName}\":");
+                    Console.WriteLine($"    Old Path: {item.OldPath}");
+                    Console.WriteLine($"    New Path: {item.NewPath}");
+
+                    // A drawing view is relinked by assigning an already‑loaded
+                    // document to its GenerativeBehavior.Document property (the
+                    // drawing equivalent of Products.ReplaceComponent).
+                    item.View.GenerativeBehavior.Document = newDoc;
+
+                    convertedItems.Add(item.OldPath);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"    Failed to replace drawing view reference: {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// For every map entry whose old file no longer exists, copies the new
+        /// file to the old location so CATIA can resolve the stored link while
+        /// opening the drawing.  Returns the list of created placeholder files
+        /// plus the set of map keys that could NOT be materialised.
+        /// </summary>
+        private static Tuple<List<string>, HashSet<string>> CreatePlaceholdersForMissingLinks(
+            Dictionary<string, string> renameMap)
+        {
+            var created = new List<string>();
+            var failed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var kvp in renameMap)
+            {
+                string oldPath = kvp.Key;
+                string newPath = kvp.Value;
+
+                if (System.IO.File.Exists(oldPath)) continue; // old file still there – nothing to do
+
+                if (!System.IO.File.Exists(newPath))
+                {
+                    failed.Add(oldPath);
+                    Console.WriteLine($"    ERROR: new file not found – cannot fix link: {newPath}");
+                    continue;
+                }
+
+                try
+                {
+                    string dir = Path.GetDirectoryName(oldPath);
+                    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                        Directory.CreateDirectory(dir);
+
+                    System.IO.File.Copy(newPath, oldPath, overwrite: false);
+                    created.Add(oldPath);
+                    Console.WriteLine($"  Temporary placeholder created: {oldPath}");
+                }
+                catch (Exception ex)
+                {
+                    failed.Add(oldPath);
+                    Console.WriteLine($"    ERROR: could not create placeholder '{oldPath}': {ex.Message}");
+                }
+            }
+            return Tuple.Create(created, failed);
+        }
+
+        /// <summary>
+        /// Deletes the temporary placeholder files again.  Only files that were
+        /// actually created by <see cref="CreatePlaceholdersForMissingLinks"/>
+        /// are removed.
+        /// </summary>
+        private static void DeletePlaceholders(List<string> createdPlaceholders)
+        {
+            foreach (string path in createdPlaceholders)
+            {
+                try
+                {
+                    if (System.IO.File.Exists(path))
+                    {
+                        System.IO.File.Delete(path);
+                        Console.WriteLine($"  Temporary placeholder removed: {path}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"    WARNING: could not delete temporary placeholder '{path}' – please remove it manually. ({ex.Message})");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Closes every open session document whose full path matches one of
+        /// <paramref name="fullPaths"/> (comparison is case-insensitive on the
+        /// normalised path, so same-named documents from OTHER folders are
+        /// never touched).
+        /// </summary>
+        private static void CloseDocumentsByFullPath(IEnumerable<string> fullPaths)
+        {
+            var wanted = new HashSet<string>(fullPaths, StringComparer.OrdinalIgnoreCase);
+            if (wanted.Count == 0) return;
+
+            dynamic documents = catiaApp.Documents;
+            int count = documents.Count;
+            for (int i = count; i >= 1; i--)   // backwards – Close() shrinks the collection
+            {
+                try
+                {
+                    dynamic doc = documents.Item(i);
+                    string fullName = NormalizePath((string)doc.FullName);
+                    if (wanted.Contains(fullName))
+                    {
+                        doc.Close();
+                        Console.WriteLine($"  Closed session document: {fullName}");
+                    }
+                }
+                catch { /* dead / unnamed document – ignore */ }
+            }
+        }
+
+        /// <summary>
+        /// Returns the full path of the 3D document (part/product) that a drawing
+        /// view represents.  A drawing view has NO “Reference” property – CATIA
+        /// exposes the pointed document through
+        /// <c>DrawingView.GenerativeBehavior.Document</c> instead.
+        /// </summary>
+        private static string GetReferencePath(dynamic view)
+        {
+            try
+            {
+                dynamic generativeBehavior = view.GenerativeBehavior;
+                if (generativeBehavior == null) return string.Empty;
+
+                // The pointed object is usually a Document (part/product), but
+                // for views linked to a single body it can be a sub‑object –
+                // then we walk up the parent chain to the owning document.
+                dynamic pointedObject = null;
+                try { pointedObject = generativeBehavior.Document; }
+                catch { return string.Empty; }  // no 3D link (2D‑only / background view) or broken link
+
+                string path = GetFullNameFromObject(pointedObject);
+                if (!string.IsNullOrWhiteSpace(path)) return NormalizePath(path);
+            }
+            catch
+            {
+                // Not a generative view (2D‑only view, background view, …) or the
+                // referenced document could not be loaded – treat as “no reference”.
+            }
+            return string.Empty;
+        }
+
+        /// <summary>
+        /// Tries to read the .FullName of a CATIA object.  If the object is not a
+        /// Document (e.g. a Body), walks up its .Parent chain until the owning
+        /// document is reached.
+        /// </summary>
+        private static string GetFullNameFromObject(dynamic catiaObject)
+        {
+            dynamic current = catiaObject;
+            for (int depth = 0; depth < 6 && current != null; depth++)
+            {
+                try
+                {
+                    string fullName = current.FullName as string;
+                    if (!string.IsNullOrWhiteSpace(fullName)) return fullName;
+                }
+                catch { /* this object has no FullName – climb one level up */ }
+
+                try { current = current.Parent; }
+                catch { break; }
+            }
+            return string.Empty;
+        }
+
+        /// <summary>
+        /// Returns an already open document or opens it – the drawing API only
+        /// accepts documents that are loaded in the current CATIA session.
+        /// </summary>
+        private static dynamic GetOrOpenDocument(string path)
+        {
+            // Documents.Open is idempotent: when the file is already loaded in
+            // the session CATIA simply returns the existing document.
+            try
+            {
+                return catiaApp.Documents.Open(path);
+            }
+            catch
+            {
+                // Fallback: look the document up by file name in the collection
+                // of currently open documents.
+                return catiaApp.Documents.Item(Path.GetFileName(path));
+            }
+        }
+
+        #endregion ------------------------------------------------------------
+
+        #region ──  Misc helpers  ────────────────────────────────────────────────
+
+        private static string StripInstanceSuffix(string partNumber)
+        {
+            // CATIA adds ".1", ".2", … to duplicated instances.
+            // If the part name already contains a dot we only remove the LAST segment.
+            if (string.IsNullOrEmpty(partNumber)) return partNumber;
+
+            var segments = partNumber.Split('.');
+            if (segments.Length > 1 && int.TryParse(segments.Last(), out _))
+            {
+                return string.Join(".", segments.Take(segments.Length - 1));
+            }
+            return partNumber;
+        }
+
+        private static string FindMatchingKeyInMap(string partNumber, Dictionary<string, string> renameMap)
+        {
+            // The map key is a *full path* (e.g. C:\Repo\Part1.CATPart)
+            // We only compare the file name without extension.
+            foreach (var key in renameMap.Keys)
+            {
+                string fileName = Path.GetFileNameWithoutExtension(key);
+                if (string.Equals(fileName, partNumber, StringComparison.OrdinalIgnoreCase))
+                    return key;
+            }
+            return null;
+        }
+
+        private static string NormalizePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return string.Empty;
+
+            // We do not want to throw if the path is malformed – just return the raw string.
+            try
+            {
+                // Path.GetFullPath resolves ".." and "." parts and normalises slashes.
+                // The ToUpper() + Trim() makes the later dictionary look‑ups case‑insensitive.
+                return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).ToUpperInvariant();
+            }
+            catch
+            {
+                return path.Trim().ToUpperInvariant();
+            }
+        }
+
+        public static void DoCleanUp()
+        {
+            // No explicit cleanup – the caller decides whether to quit CATIA or keep it alive.
+        }
+
+        #endregion
+    }
+}

@@ -1,0 +1,51 @@
+The method ProcessDrawing in CatiaReferenceRename.WPFUI.Lib.CatiaUtils is intended to replace missing refrences of CatPart files in a CATDrawing document.
+
+The method gets the address of the catdrawing file and a dictionary of fileName:New address files. For example
+
+drawingPath: C:\catia\E1031F-F20435V1-1-R1-1.CATDrawing
+renameMap: [{F20435V1.CATPart - C:\CatiaParts\E1031F-F20435V1-2-R1-1.CATPart}]
+
+it means the method should replace any refrences (with any address) to the file "F20435V1.CATPart" to the new address C:\CatiaParts\E1031F-F20435V1-2-R1-1.CATPart
+However it is not working
+
+This is the output in the console I'm receiving from the system
+
+
+Opening drawing: C:\catia\E1031F-F20435V1-1-R1-1.CATDrawing
+  Temporary placeholder created: C:\CATIA\F20435V1.CATPART
+'SolidRefrenceRename.WPFUI.exe' (CLR v4.0.30319: SolidRefrenceRename.WPFUI.exe): Loaded 'Anonymously Hosted DynamicMethods Assembly'. 
+'SolidRefrenceRename.WPFUI.exe' (CLR v4.0.30319: SolidRefrenceRename.WPFUI.exe): Loaded 'C:\Windows\Microsoft.Net\assembly\GAC_MSIL\System.Dynamic\v4.0_4.0.0.0__b03f5f7f11d50a3a\System.Dynamic.dll'. Skipped loading symbols. Module is optimized and the debugger option 'Just My Code' is enabled.
+  Drawing is already open – reusing session document: C:\CATIA\E1031F-F20435V1-1-R1-1.CATDRAWING
+Exception thrown: 'System.Reflection.TargetInvocationException' in SolidRefrenceRename.WPFUI.exe
+Exception thrown: 'System.Reflection.TargetInvocationException' in SolidRefrenceRename.WPFUI.exe
+    View "Main View" on sheet "Sheet.1" has no readable 3D link - skipped.
+Exception thrown: 'System.Reflection.TargetInvocationException' in SolidRefrenceRename.WPFUI.exe
+Exception thrown: 'System.Reflection.TargetInvocationException' in SolidRefrenceRename.WPFUI.exe
+    View "Background View" on sheet "Sheet.1" has no readable 3D link - skipped.
+Exception thrown: 'System.Reflection.TargetInvocationException' in SolidRefrenceRename.WPFUI.exe
+Exception thrown: 'System.Reflection.TargetInvocationException' in SolidRefrenceRename.WPFUI.exe
+    View "Front view" on sheet "Sheet.1" has no readable 3D link - skipped.
+Exception thrown: 'System.Reflection.TargetInvocationException' in SolidRefrenceRename.WPFUI.exe
+Exception thrown: 'System.Reflection.TargetInvocationException' in SolidRefrenceRename.WPFUI.exe
+    View "Section view B-B" on sheet "Sheet.1" has no readable 3D link - skipped.
+Exception thrown: 'System.Reflection.TargetInvocationException' in SolidRefrenceRename.WPFUI.exe
+Exception thrown: 'System.Reflection.TargetInvocationException' in SolidRefrenceRename.WPFUI.exe
+    View "Isometric view" on sheet "Sheet.1" has no readable 3D link - skipped.
+Exception thrown: 'System.Runtime.InteropServices.COMException' in System.Dynamic.dll
+    Drawing update failed: Error HRESULT E_FAIL has been returned from a call to a COM component.
+Exception thrown: 'System.Runtime.InteropServices.COMException' in System.Dynamic.dll
+    WARNING: CATIA failed to save drawing (attempt 1/2). Retrying...
+Exception thrown: 'System.Runtime.InteropServices.COMException' in System.Dynamic.dll
+Exception thrown: 'System.Runtime.InteropServices.COMException' in SolidRefrenceRename.WPFUI.exe
+    Save failed, trying SaveAs fallback: CATIA failed to save drawing after 2 attempts: Error HRESULT E_FAIL has been returned from a call to a COM component.
+Exception thrown: 'System.Runtime.InteropServices.COMException' in System.Dynamic.dll
+    WARNING: CATIA failed to save drawing as (attempt 1/2). Retrying...
+Exception thrown: 'System.Runtime.InteropServices.COMException' in System.Dynamic.dll
+Exception thrown: 'System.Runtime.InteropServices.COMException' in SolidRefrenceRename.WPFUI.exe
+Exception thrown: 'System.Exception' in SolidRefrenceRename.WPFUI.exe
+  ERROR while processing drawing 'C:\catia\E1031F-F20435V1-1-R1-1.CATDrawing': Failed to save drawing: CATIA failed to save drawing as after 2 attempts: Error HRESULT E_FAIL has been returned from a call to a COM component.
+Exception thrown: 'System.Exception' in SolidRefrenceRename.WPFUI.exe
+  Closing CATIA document (attempt 1/2, drawing): C:\CATIA\E1031F-F20435V1-1-R1-1.CATDRAWING
+  Closed CATIA document: C:\CATIA\E1031F-F20435V1-1-R1-1.CATDRAWING
+  Temporary placeholder removed: C:\CATIA\F20435V1.CATPART
+Unexpected error: Failed to save drawing: CATIA failed to save drawing as after 2 attempts: Error HRESULT E_FAIL has been returned from a call to a COM component.

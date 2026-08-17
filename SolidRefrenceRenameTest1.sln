@@ -1,0 +1,66 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36616.10
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SolidRefrenceRename.ConsoleTest1", "SolidRefrenceRename.ConsoleTest1\SolidRefrenceRename.ConsoleTest1.csproj", "{1F689227-C31F-44EF-B6E2-FF143D7BC28E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SolidRefrenceRename.ConsoleTest2", "SolidRefrenceRename.ConsoleTest2\SolidRefrenceRename.ConsoleTest2.csproj", "{CEF7EE17-5C83-4712-99C7-4B57DCA4CC66}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SolidRefrenceRename.ConsoleTest4", "SolidRefrenceRename.ConsoleTest4\SolidRefrenceRename.ConsoleTest4.csproj", "{6B855D41-30A7-4B47-8E8E-AB5C2EA8C404}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SolidRefrenceRename.WinFormTest1", "SolidRefrenceRename.WinFormTest1\SolidRefrenceRename.WinFormTest1.csproj", "{19011A1E-9908-4DEA-8F98-729C69CB1052}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SolidRefrenceRename.WPFUI", "SolidRefrenceRename.WPFUI\SolidRefrenceRename.WPFUI.csproj", "{E3A7747F-8CD8-45F1-934F-AB015D633DE4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SolidRefrenceRename.Test5", "SolidRefrenceRename.Test5\SolidRefrenceRename.Test5.csproj", "{BB62BC78-600C-47F8-8382-1AB5AC06A10B}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "SolutionItems", "SolutionItems", "{02EA681E-C7D8-13C7-8484-4AC65E1B71E8}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "CatiaNili", "CatiaNili", "{92FA1FA4-D425-488C-A32A-7BD7B445E543}"
+	ProjectSection(SolutionItems) = preProject
+		SolutionItems\CatiaNili\ai_studio_code.cs = SolutionItems\CatiaNili\ai_studio_code.cs
+		SolutionItems\CatiaNili\New Text Document.txt = SolutionItems\CatiaNili\New Text Document.txt
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{1F689227-C31F-44EF-B6E2-FF143D7BC28E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1F689227-C31F-44EF-B6E2-FF143D7BC28E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1F689227-C31F-44EF-B6E2-FF143D7BC28E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1F689227-C31F-44EF-B6E2-FF143D7BC28E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CEF7EE17-5C83-4712-99C7-4B57DCA4CC66}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CEF7EE17-5C83-4712-99C7-4B57DCA4CC66}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CEF7EE17-5C83-4712-99C7-4B57DCA4CC66}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CEF7EE17-5C83-4712-99C7-4B57DCA4CC66}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6B855D41-30A7-4B47-8E8E-AB5C2EA8C404}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6B855D41-30A7-4B47-8E8E-AB5C2EA8C404}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6B855D41-30A7-4B47-8E8E-AB5C2EA8C404}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6B855D41-30A7-4B47-8E8E-AB5C2EA8C404}.Release|Any CPU.Build.0 = Release|Any CPU
+		{19011A1E-9908-4DEA-8F98-729C69CB1052}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{19011A1E-9908-4DEA-8F98-729C69CB1052}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{19011A1E-9908-4DEA-8F98-729C69CB1052}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{19011A1E-9908-4DEA-8F98-729C69CB1052}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E3A7747F-8CD8-45F1-934F-AB015D633DE4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E3A7747F-8CD8-45F1-934F-AB015D633DE4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E3A7747F-8CD8-45F1-934F-AB015D633DE4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E3A7747F-8CD8-45F1-934F-AB015D633DE4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BB62BC78-600C-47F8-8382-1AB5AC06A10B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BB62BC78-600C-47F8-8382-1AB5AC06A10B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BB62BC78-600C-47F8-8382-1AB5AC06A10B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BB62BC78-600C-47F8-8382-1AB5AC06A10B}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{92FA1FA4-D425-488C-A32A-7BD7B445E543} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {ADDE8C16-B6B1-4DCF-ACFB-39ECCE035E9B}
+	EndGlobalSection
+EndGlobal
