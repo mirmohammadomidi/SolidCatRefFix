@@ -62,9 +62,13 @@
             </StackPanel>
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Height="120">
                 <TextBlock  Text="Target File Address: " VerticalAlignment="Center"/>
-                <TextBox x:Name="txbCatiaTargetFile" Width="350" Margin="10 0 0 0"  Height="30" Text="C:\catia\E1031F-F20435V1-1-R1-1.CATDrawing"/>
+                <TextBox x:Name="txbCatiaTargetFile" Width="350" Margin="10 0 0 0"  Height="30" Text="C:\Catia\E1031FA-FA20174V1-2-R1-1.CATProduct"/>
                 <TextBlock x:Name="txbParts" Text="Parts addresses: " Margin="10 0 0 0" VerticalAlignment="Center"/>
-                <TextBox x:Name="txbSourceFiles" MinWidth="200"  TextWrapping="Wrap" Margin="10 0 0 0"  Height="100" Text="F20435V1.CATPart;C:\CatiaParts\E1031F-F20435V1-2-R1-1.CATPart,"/>
+                <TextBox x:Name="txbSourceFiles" MinWidth="200" MaxLines="50" Width="400"  TextWrapping="Wrap" Margin="10 0 0 0"  Height="100" 
+                         Text="F20435V1.CATPart;C:\CatiaParts\E1031F-F20435V1-2-R1-1.CATPart,
+                               F20427V1.CATPart;C:\CatiaParts\E1031F-F20427V1-3-R1-1.CATPart,
+                               F20428V1.CATPart;C:\CatiaParts\E1031F-F20428V1-3-R1-1.CATPart,
+                               F20429V1.CATPart;C:\CatiaParts\E1031F-F20429V1-3-R1-1.CATPart"/>
             </StackPanel>
         </StackPanel>
         <StackPanel Grid.Column="0" Grid.Row="5"  Orientation="Horizontal">
