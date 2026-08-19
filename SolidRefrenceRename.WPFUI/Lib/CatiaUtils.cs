@@ -3,12 +3,15 @@ using ProductStructureTypeLib;
 using SolidRefrenceRename.WPFUI.Lib;
 using SolidRefrenceRename.WPFUI.Models;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
+using static System.Net.WebRequestMethods;
 
 namespace CatiaReferenceRename.WPFUI.Lib
 {
@@ -395,17 +398,19 @@ namespace CatiaReferenceRename.WPFUI.Lib
         #region ──  Drawing (CATDrawing) handling  ───────────────────────────────
 
         /// <summary>
-        /// Clean drawing relink implementation.
-        /// The drawing stores its view links under the OLD file path/name
-        /// (possibly on an unreachable server share).  CATIA resolves a broken
-        /// link to any document ALREADY LOADED in the session that carries the
-        /// same document name.  Therefore:
-        ///   1. Copy the new file into a temp folder under the OLD file name.
-        ///   2. Open that part FIRST, then open the drawing – the broken link
-        ///      binds to the in-session part.
-        ///   3. SaveAs the part to the real NEW path – CATIA rebinds every
-        ///      pointing document (the drawing) to the new address.
-        ///   4. Save the drawing and clean up.
+        /// Processes a CATDrawing by relinking its referenced parts to new
+        /// file locations. The method stages replacement part files under their
+        /// original names, opens them so the drawing binds to the staged
+        /// documents, performs SaveAs to move staged parts to their real new
+        /// locations (forcing CATIA to rewrite the drawing links), updates
+        /// and saves the drawing, and performs cleanup of opened documents
+        /// and temporary files.
+        /// The method ProcessDrawing in CatiaReferenceRename.WPFUI.Lib.CatiaUtils is intended to replace missing refrences of CatPart files in a CATDrawing document.
+        /// The method gets the address of the catdrawing file and a dictionary of fileName:New address files.For example
+        /// drawingPath: C:\catia\E1031F-F20435V1-1-R1-1.CATDrawing
+        /// renameMap: [{F20435V1.CATPart - C:\CatiaParts\E1031F-F20435V1-2-R1-1.CATPart}]
+        /// it means the method should replace any refrences(with any address) to the file "F20435V1.CATPart" to the new address C:\CatiaParts\E1031F-F20435V1-2-R1-1.CATPart
+        /// However it is not working
         /// </summary>
         private static void ProcessDrawing(
             string drawingPath,
@@ -413,168 +418,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
             List<string> convertedItems,
             List<string> newAssembliesFound)
         {
-            ConsoleWriteLine($"\nProcessing drawing (clean relink): {drawingPath}");
 
-            string tempDir = Path.Combine(Path.GetTempPath(),
-                "CatiaRelink_" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(tempDir);
-
-            // tempPartPath -> newPath for every map entry we can service
-            var tempToNew = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            var openedParts = new List<string>();
-            dynamic drawingDoc = null;
-
-            try
-            {
-                // ---------------------------------------------------------
-                // 1-  Stage the new files under their OLD file names.
-                // ---------------------------------------------------------
-                foreach (var kvp in renameMap)
-                {
-                    string oldName = Path.GetFileName(kvp.Key);
-                    string newPath = kvp.Value;
-
-                    if (!System.IO.File.Exists(newPath))
-                    {
-                        ConsoleWriteLine($"  WARNING: new file not found, entry skipped: {newPath}");
-                        continue;
-                    }
-
-                    string tempPart = Path.Combine(tempDir, oldName);
-                    System.IO.File.Copy(newPath, tempPart, overwrite: true);
-                    System.IO.File.SetAttributes(tempPart, FileAttributes.Normal);
-                    tempToNew[tempPart] = newPath;
-                    ConsoleWriteLine($"  Staged '{newPath}' as '{tempPart}'");
-                }
-
-                if (tempToNew.Count == 0)
-                    throw new Exception("No usable rename entries – nothing staged.");
-
-                // ---------------------------------------------------------
-                // 2-  Open the staged parts FIRST so the drawing's broken
-                //     links resolve to them by document name.
-                // ---------------------------------------------------------
-                foreach (string tempPart in tempToNew.Keys)
-                {
-                    ExecuteComActionWithRetry(
-                        () => catiaApp.Documents.Open(tempPart),
-                        $"open staged part '{tempPart}'",
-                        3,
-                        500);
-                    openedParts.Add(tempPart);
-                    ConsoleWriteLine($"  Opened staged part: {tempPart}");
-                }
-
-                // ---------------------------------------------------------
-                // 3-  Open the drawing – links bind to the session parts.
-                // ---------------------------------------------------------
-                drawingDoc = OpenDrawingDocument(drawingPath);
-                if (drawingDoc == null)
-                    throw new Exception("DrawingDocument returned null after opening.");
-
-                // ---------------------------------------------------------
-                // 4-  SaveAs each staged part to its real new path.  This is
-                //     the operation that makes CATIA rewrite the link stored
-                //     in the drawing (identical to interactive File > Save As).
-                // ---------------------------------------------------------
-                foreach (var kvp in tempToNew)
-                {
-                    string tempPart = kvp.Key;
-                    string newPath = kvp.Value;
-                    string backup = null;
-
-                    dynamic partDoc = GetOpenDocumentByPath(tempPart);
-                    if (partDoc == null)
-                        throw new Exception($"Staged part not found in session: {tempPart}");
-
-                    try
-                    {
-                        // Move the existing target aside – SaveAs over an
-                        // existing file triggers a (suppressed) alert that can
-                        // fail the whole call with E_FAIL.
-                        if (System.IO.File.Exists(newPath))
-                        {
-                            backup = newPath + ".relink_bak";
-                            if (System.IO.File.Exists(backup))
-                                System.IO.File.Delete(backup);
-                            System.IO.File.Move(newPath, backup);
-                        }
-
-                        ExecuteComActionWithRetry(
-                            () => partDoc.SaveAs(newPath),
-                            $"SaveAs staged part to '{newPath}'",
-                            3,
-                            500);
-
-                        ConsoleWriteLine($"  Relinked via SaveAs: {tempPart} -> {newPath}");
-                        convertedItems.Add(newPath);
-
-                        if (backup != null && System.IO.File.Exists(backup))
-                            System.IO.File.Delete(backup);
-                    }
-                    catch
-                    {
-                        // Restore the original target on failure.
-                        if (backup != null &&
-                            System.IO.File.Exists(backup) &&
-                            !System.IO.File.Exists(newPath))
-                        {
-                            System.IO.File.Move(backup, newPath);
-                        }
-                        throw;
-                    }
-                    finally
-                    {
-                        ReleaseComObject(partDoc);
-                    }
-                }
-
-                // ---------------------------------------------------------
-                // 5-  Regenerate views and persist the drawing.
-                // ---------------------------------------------------------
-                try { drawingDoc.Update(); }
-                catch (Exception ex)
-                {
-                    ConsoleWriteLine($"  Drawing update failed (links are still saved): {ex.Message}");
-                }
-
-                ExecuteComActionWithRetry(
-                    () => drawingDoc.Save(),
-                    "save drawing",
-                    3,
-                    500);
-                ConsoleWriteLine("Drawing saved successfully.");
-            }
-            catch (Exception ex)
-            {
-                ConsoleWriteLine($"  ERROR while processing drawing '{drawingPath}': {ex.Message}");
-                throw;
-            }
-            finally
-            {
-                // 6-  Cleanup: drawing first, then the (now renamed) parts,
-                //     then the temp staging folder.
-                CloseDocumentByFullPath(drawingPath, "drawing");
-
-                foreach (var kvp in tempToNew)
-                {
-                    // After SaveAs the session document lives at the NEW path;
-                    // if SaveAs never ran it is still at the temp path.
-                    CloseDocumentByFullPath(kvp.Value, "relinked part");
-                    CloseDocumentByFullPath(kvp.Key, "staged part");
-                }
-
-                ReleaseComObject(drawingDoc);
-                drawingDoc = null;
-
-                try { Directory.Delete(tempDir, recursive: true); }
-                catch (Exception ex)
-                {
-                    ConsoleWriteLine($"  WARNING: could not delete temp folder '{tempDir}': {ex.Message}");
-                }
-            }
-
-            newAssembliesFound.Add(drawingPath);
         }
 
         /// <summary>
@@ -630,7 +474,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
             var placeholders = CreatePlaceholdersForMissingLinks(renameMap, drawingPath);
             var createdPlaceholders = placeholders.Item1;
             var unavailableKeys = placeholders.Item2;
-            List<string> newFilesOppendToBeClosed=new List<string>();
+            List<string> newFilesOppendToBeClosed = new List<string>();
 
             // -----------------------------------------------------------------
             // 1️⃣  GenerativeBehavior.Document only works when the pointed
@@ -640,7 +484,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
             //     drawing binds its links to these session documents.
             // -----------------------------------------------------------------
             List<string> preloadedPaths = new List<string>();
-             preloadedPaths = PreloadOldDocuments(renameMap, unavailableKeys, createdPlaceholders, drawingPath);
+            preloadedPaths = PreloadOldDocuments(renameMap, unavailableKeys, createdPlaceholders, drawingPath);
 
             dynamic drawingDoc = null; // we use dynamic to avoid pulling in a second interop assembly
             try
