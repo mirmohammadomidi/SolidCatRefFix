@@ -413,12 +413,33 @@ namespace CatiaReferenceRename.WPFUI.Lib
         /// locations (forcing CATIA to rewrite the drawing links), updates
         /// and saves the drawing, and performs cleanup of opened documents
         /// and temporary files.
-        /// The method ProcessDrawing in CatiaReferenceRename.WPFUI.Lib.CatiaUtils is intended to replace missing refrences of CatPart files in a CATDrawing document.
-        /// The method gets the address of the catdrawing file and a dictionary of fileName:New address files.For example
-        /// drawingPath: C:\catia\E1031F-F20435V1-1-R1-1.CATDrawing
-        /// renameMap: [{F20435V1.CATPart - C:\CatiaParts\E1031F-F20435V1-2-R1-1.CATPart}]
-        /// it means the method should replace any refrences(with any address) to the file "F20435V1.CATPart" to the new address C:\CatiaParts\E1031F-F20435V1-2-R1-1.CATPart
-        /// However it is not working
+        ///
+        /// Example:
+        ///   drawingPath: C:\catia\E1031F-F20435V1-1-R1-1.CATDrawing
+        ///   renameMap  : { F20435V1.CATPart -> C:\CatiaParts\E1031F-F20435V1-2-R1-1.CATPart }
+        /// Every reference to "F20435V1.CATPart" (stored under ANY address) is
+        /// redirected to C:\CatiaParts\E1031F-F20435V1-2-R1-1.CATPart.
+        ///
+        /// Why it is done this way (all empirically verified - see the
+        /// catia-com-automation skill):
+        ///   * CATIA resolves external links ONLY while a document is opened,
+        ///     so the drawing is closed first and re-opened AFTER the
+        ///     replacement files are staged.  Otherwise every view reports
+        ///     "no readable 3D link" and Update/Save fail with E_FAIL.
+        ///   * Assigning GenerativeBehavior.Document on an EXISTING view does
+        ///     NOT relink it: the property-put is accepted, but reading the
+        ///     link back still shows the old file.  It is kept only as a
+        ///     fallback.
+        ///   * The mechanism that DOES work is SaveAs on the pointed document:
+        ///     with the drawing open, saving the staged part to its real new
+        ///     path makes CATIA rebind the drawing's links, exactly like the
+        ///     interactive File > Save As.  Saving the drawing then persists
+        ///     the new paths.
+        ///   * SaveAs fails with E_FAIL when the target file already exists
+        ///     (the suppressed "overwrite?" alert is auto-answered with "no"),
+        ///     so an existing target is moved aside first.
+        ///   * CATIA may report a successful Save/SaveAs WITHOUT writing
+        ///     anything, so every write is verified against the file system.
         /// </summary>
         private static void ProcessDrawing(
             string drawingPath,
@@ -600,7 +621,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
                 // -------------------------------------------------------------
                 try
                 {
-                    drawingDoc.Update();
+                    ComUpdate(drawingDoc);
                 }
                 catch (Exception ex)
                 {
@@ -1119,7 +1140,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
                 try
                 {
                     ExecuteComActionWithRetry(
-                        () => pointedDoc.SaveAs(newPath),
+                        () => ComSaveAs(pointedDoc, newPath),
                         $"SaveAs the pointed document to '{newPath}'",
                         2,
                         250);
@@ -1184,12 +1205,11 @@ namespace CatiaReferenceRename.WPFUI.Lib
         /// <summary>
         /// Diagnoses a failing SaveAs once per session.
         ///
-        /// Relinking a CATDrawing is IMPOSSIBLE without a working SaveAs, and a
-        /// CATIA installation whose write operations are disabled reports the
-        /// very same E_FAIL as a genuine, fixable problem (name conflict,
-        /// existing target, hidden dialog).  The two cases are told apart by
-        /// asking CATIA to SaveAs a brand-new, empty part into the temp folder:
-        /// when even that fails, no automation code can help.
+        /// Relinking a CATDrawing is IMPOSSIBLE without a working SaveAs, so the
+        /// distinction between "this file cannot be saved" and "this session
+        /// cannot save anything" matters: both report the same E_FAIL.  The two
+        /// cases are told apart by asking CATIA to SaveAs a brand-new, empty
+        /// part into the temp folder.
         /// </summary>
         private static void ReportSaveAsCapability()
         {
@@ -1200,11 +1220,14 @@ namespace CatiaReferenceRename.WPFUI.Lib
                 Path.GetTempPath(),
                 "CatiaSaveAsProbe_" + Guid.NewGuid().ToString("N") + ".CATPart");
 
-            dynamic probeDoc = null;
+            object probeDoc = null;
             try
             {
-                probeDoc = catiaApp.Documents.Add("Part");
-                probeDoc.SaveAs(probePath);
+                probeDoc = InvokeComMethod(catiaApp.Documents, "Add", "Part");
+                ComSaveAs(probeDoc, probePath);
+
+                if (!System.IO.File.Exists(probePath))
+                    throw new Exception("SaveAs reported success but wrote no file.");
 
                 ConsoleWriteLine("    DIAGNOSIS: SaveAs works in general - the failure above is specific to this file " +
                                  "(name conflict, locked target or a hidden CATIA dialog).");
@@ -1214,16 +1237,16 @@ namespace CatiaReferenceRename.WPFUI.Lib
                 var inner = (ex as TargetInvocationException)?.InnerException ?? ex;
                 ConsoleWriteLine("    DIAGNOSIS: this CATIA session cannot SaveAs ANY document - even a new, empty part " +
                                  $"into '{Path.GetTempPath()}' fails ({inner.Message}).");
-                ConsoleWriteLine("               Relinking a CATDrawing is impossible without SaveAs. Check the CATIA " +
-                                 "licence (a missing/invalid licence disables all write operations), then verify that " +
-                                 "File > Save As works INTERACTIVELY in CATIA before running this tool again.");
+                ConsoleWriteLine("               Relinking a CATDrawing is impossible without SaveAs. Verify that " +
+                                 "File > Save As works INTERACTIVELY in CATIA, and that CATIA was started with a " +
+                                 "licence that permits saving (a headless/unlicensed session silently refuses writes).");
             }
             finally
             {
                 try
                 {
                     if (probeDoc != null)
-                        probeDoc.Close();
+                        InvokeComMethod(probeDoc, "Close");
                 }
                 catch { /* best effort */ }
                 ReleaseComObject(probeDoc);
@@ -1241,17 +1264,16 @@ namespace CatiaReferenceRename.WPFUI.Lib
         /// Saves the drawing, falling back to SaveAs (through a temporary file,
         /// because SaveAs onto an existing path fails with E_FAIL).
         /// </summary>
-        private static bool SaveDrawing(dynamic drawingDoc, string drawingPath)
+        private static bool SaveDrawing(object drawingDoc, string drawingPath)
         {
             DateTime writeTimeBefore = GetLastWriteTimeSafe(drawingPath);
 
             try
             {
-                ExecuteComActionWithRetry(() => drawingDoc.Save(), "save drawing", 3, 400);
+                ExecuteComActionWithRetry(() => ComSave(drawingDoc), "save drawing", 3, 400);
 
                 // CATIA can report a successful Save WITHOUT writing anything to
-                // disk (installations whose write operations are disabled do
-                // exactly that), so trust the file system, not the return value.
+                // disk, so trust the file system, not the return value.
                 DateTime writeTimeAfter = GetLastWriteTimeSafe(drawingPath);
                 if (writeTimeAfter > writeTimeBefore)
                 {
@@ -1277,7 +1299,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
                 if (System.IO.File.Exists(tempPath))
                     System.IO.File.Delete(tempPath);
 
-                ExecuteComActionWithRetry(() => drawingDoc.SaveAs(tempPath), "save drawing as", 2, 400);
+                ExecuteComActionWithRetry(() => ComSaveAs(drawingDoc, tempPath), "save drawing as", 2, 400);
 
                 if (!System.IO.File.Exists(tempPath))
                 {
@@ -1796,7 +1818,7 @@ End Function";
                 // -------------------------------------------------------------
                 try
                 {
-                    drawingDoc.Update();
+                    ComUpdate(drawingDoc);
                 }
                 catch (Exception ex)
                 {
@@ -1811,7 +1833,7 @@ End Function";
                 try
                 {
                     ExecuteComActionWithRetry(
-                        () => drawingDoc.Save(),
+                        () => ComSave(drawingDoc),
                         "save drawing",
                         2,
                         250);
@@ -1829,7 +1851,7 @@ End Function";
                     {
                         ConsoleWriteLine($"    Save failed, trying SaveAs fallback: {lastSaveError?.Message}");
                         ExecuteComActionWithRetry(
-                            () => drawingDoc.SaveAs(drawingPath),
+                            () => ComSaveAs(drawingDoc, drawingPath),
                             "save drawing as",
                             2,
                             250);
@@ -2978,6 +3000,42 @@ End Sub";
                 args);
         }
 
+        /// <summary>
+        /// Calls Document.SaveAs through REFLECTION - never through `dynamic`.
+        ///
+        /// CRITICAL (measured on a licensed CATIA V5 B29 session, same document,
+        /// same target folder, back-to-back):
+        ///   reflection InvokeMember("SaveAs") -> file written
+        ///   dynamic    doc.SaveAs(path)       -> E_FAIL (0x80004005)
+        ///   reflection InvokeMember("SaveAs") -> file written again
+        ///   typed      INFITF.Document.SaveAs -> file written
+        /// The C# `dynamic` binder talks to CATIA's IDispatch differently (it
+        /// scans ITypeInfo and marshals the argument via its own binding path),
+        /// and CATIA rejects that call. This is NOT a licence problem and NOT a
+        /// "target exists" problem - it is purely the call mechanism.
+        /// Never convert these calls back to `dynamic`.
+        /// </summary>
+        private static void ComSaveAs(object document, string path)
+        {
+            InvokeComMethod(document, "SaveAs", path);
+        }
+
+        /// <summary>
+        /// Calls Document.Save through reflection (see <see cref="ComSaveAs"/>).
+        /// </summary>
+        private static void ComSave(object document)
+        {
+            InvokeComMethod(document, "Save");
+        }
+
+        /// <summary>
+        /// Calls Document.Update through reflection (see <see cref="ComSaveAs"/>).
+        /// </summary>
+        private static void ComUpdate(object document)
+        {
+            InvokeComMethod(document, "Update");
+        }
+
         private static void ExecuteComActionWithRetry(
             Action action,
             string actionName,
@@ -3177,7 +3235,7 @@ End Sub";
                     try
                     {
                         ExecuteComActionWithRetry(
-                            () => oldDoc.SaveAs(newPath),
+                            () => ComSaveAs(oldDoc, newPath),
                             $"SaveAs pointed document to '{newPath}'",
                             2,
                             250);

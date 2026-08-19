@@ -124,28 +124,46 @@ whenever matching drawings to parts.
     only geometry regeneration failed) - log and continue to Save. But a
     Save failure IS fatal; SaveAs to the same path is the fallback.
 
-2e. **This dev machine's CATIA (B29) cannot save AT ALL - do not chase it.**
-   Measured with standalone probes (2026-08): `Documents.Open` and `Save()`
-   return success, but `SaveAs` fails with E_FAIL for EVERY document,
-   including a brand-new empty `Documents.Add("Part")` saved into
-   `%TEMP%`. It fails identically out-of-process, via reflection, and
-   in-process via `SystemService.Evaluate` (`Err.Description = "The method
-   SaveAs failed"`, source `CATIAPartDocument`). `ExportData` fails too,
-   while CATIA's own `FileSystem.CopyFile` works. Worse, `Save()` reports
-   success and the file on disk NEVER changes (verified by renaming a sheet,
-   saving, reopening: the rename is gone; mtime/length unchanged). The
-   install has ~3535 `*.beforeSPK` patched binaries and a patched
-   `license.lic` (`AF_WIN_PATCH`), i.e. write operations are disabled by the
-   crack. Consequence: `ProcessDrawing` CANNOT be verified end-to-end here;
-   it must be validated on a properly licensed CATIA. Before debugging any
-   save/relink failure, check `File > Save As` interactively first -
-   `ReportSaveAsCapability()` in CatiaUtils.cs performs exactly this probe
-   and logs the diagnosis once per session.
+2e. **!!! NEVER call SaveAs/Save/Update through C# `dynamic` - use
+   reflection. THIS WAS THE ROOT CAUSE of the long-standing E_FAIL bug.**
+   Measured on a licensed CATIA V5 B29 session, same scratch part, same
+   target folder, four calls back-to-back:
+   ```
+   reflection InvokeMember("SaveAs") -> file written      OK
+   dynamic    doc.SaveAs(path)       -> E_FAIL 0x80004005 FAIL
+   reflection InvokeMember("SaveAs") -> file written      OK   (session fine)
+   typed      INFITF.Document.SaveAs -> file written      OK
+   ```
+   The C# `dynamic` binder drives CATIA's IDispatch through its own
+   ITypeInfo-scanning/marshaling path, and CATIA rejects the call. It is NOT
+   a licence issue, NOT a "target already exists" issue, NOT a modal dialog,
+   and it does NOT poison the session. Use the `ComSaveAs` / `ComSave` /
+   `ComUpdate` helpers in CatiaUtils.cs, which wrap `InvokeComMethod`
+   (reflection). After this one change `ProcessDrawing` went from
+   "0 of 3 views relinked" to all views relinked + saved + verified.
+   Beware: a headless CATIA launched via `Activator.CreateInstance` also
+   cannot SaveAs, which can masquerade as the same symptom - attach to a
+   real GUI session (`Marshal.GetActiveObject`) when testing.
+   `ReportSaveAsCapability()` distinguishes the two cases.
 
-2f. **Never trust a CATIA "success" return for a write.** Because of 2e,
-   every save path verifies the FILE SYSTEM afterwards: `SaveAsRedirect`
-   checks `File.Exists(newPath)`, and `SaveDrawing` compares the drawing's
+2f. **Never trust a CATIA "success" return for a write.** Every save path
+   verifies the FILE SYSTEM afterwards: `SaveAsRedirect` checks
+   `File.Exists(newPath)`, and `SaveDrawing` compares the drawing's
    `LastWriteTimeUtc` before/after `Save()`. Keep these checks.
+
+2i. **`SaveAs` re-serialises the part; its byte size WILL change.** The
+   redirected part went 228,411 -> 194,560 bytes. It still opens with its
+   `PartBody` intact - this is CATIA rewriting the container, not data loss.
+   Do not "fix" it by copying the original file over the SaveAs result: that
+   would restore the old internal document name and break the new link.
+
+2j. **"The method Document failed" on a cold-opened drawing is NORMAL here**
+   and is NOT proof that a relink failed. The pristine, untouched test
+   drawing reports it too, even with the referenced part present AND open in
+   the session (some views expose no readable 3D link via automation at all).
+   Judge success by the log line written DURING the redirect
+   (`View on sheet "..." now points to the new file`) plus the post-save
+   `VERIFIED:` line, not by a cold read of `GenerativeBehavior.Document`.
 
 2g. **Staging beats placeholders.** `ProcessDrawing` copies the NEW file
    under the OLD file name next to the drawing (`StageReplacementFile`),
