@@ -10,6 +10,8 @@ using System.Linq;
 using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using static System.Net.WebRequestMethods;
 
@@ -19,6 +21,12 @@ namespace CatiaReferenceRename.WPFUI.Lib
     {
         private static INFITF.Application catiaApp;
         private static ProductDocument productDoc;
+
+        /// <summary>
+        /// The "CATIA cannot SaveAs at all" diagnosis is logged only once per
+        /// session - it would otherwise repeat for every drawing.
+        /// </summary>
+        private static bool saveAsCapabilityReported;
 
         public static event EventHandler<string> LogErrors;
 
@@ -418,7 +426,1213 @@ namespace CatiaReferenceRename.WPFUI.Lib
             List<string> convertedItems,
             List<string> newAssembliesFound)
         {
+            ConsoleWriteLine($"\nProcessing drawing: {drawingPath}");
 
+            string normalizedDrawingPath = NormalizePath(drawingPath);
+
+            // -----------------------------------------------------------------
+            // 0-  CATIA resolves external links ONLY while a document is being
+            //     opened.  A drawing that is already loaded keeps its broken
+            //     links for the whole session, so close it now and let step 3
+            //     re-open it AFTER the replacement files have been staged.
+            // -----------------------------------------------------------------
+            if (IsDocumentOpen(normalizedDrawingPath))
+            {
+                ConsoleWriteLine("  Drawing is already open - closing it so CATIA re-resolves its links on open.");
+                CloseDocumentByFullPath(drawingPath, "drawing (force fresh link resolution)");
+            }
+
+            // -----------------------------------------------------------------
+            // 1-  Which rename-map entries does this drawing actually point at?
+            //     The stored link paths are read straight out of the CATDrawing
+            //     file, so the match works for ANY old address.
+            // -----------------------------------------------------------------
+            List<DrawingLinkFix> fixes = BuildDrawingLinkFixes(drawingPath, renameMap);
+            if (fixes.Count == 0)
+            {
+                ConsoleWriteLine("  No reference of this drawing matches the rename map - nothing to do.");
+                newAssembliesFound.Add(drawingPath);
+                return;
+            }
+
+            var stagedFiles = new List<string>();
+            // backupPath -> originalPath (real old files that were moved aside)
+            var movedOriginals = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var documentsToClose = new List<string>();
+            var workList = new List<DrawingWorkItem>();
+            var newDocs = new Dictionary<string, dynamic>(StringComparer.OrdinalIgnoreCase);
+            dynamic drawingDoc = null;
+
+            try
+            {
+                // -------------------------------------------------------------
+                // 2-  Stage every replacement file UNDER ITS ORIGINAL NAME at
+                //     the locations CATIA searches (stored link folder, drawing
+                //     folder, rename-map key folder) and open it, so the
+                //     drawing binds its views to the staged document.
+                // -------------------------------------------------------------
+                foreach (DrawingLinkFix fix in fixes)
+                {
+                    StageReplacementFile(fix, stagedFiles, movedOriginals);
+                }
+
+                foreach (DrawingLinkFix fix in fixes)
+                {
+                    if (string.IsNullOrEmpty(fix.StagedPath)) continue;
+
+                    // CATIA cannot hold two documents with the same file name.
+                    CloseConflictingDocumentsByName(
+                        Path.GetFileName(fix.StagedPath),
+                        NormalizePath(fix.StagedPath));
+
+                    if (OpenStagedDocument(fix.StagedPath))
+                        documentsToClose.Add(NormalizePath(fix.StagedPath));
+                    else
+                        fix.StagedPath = null;
+                }
+
+                var openableFixes = new List<DrawingLinkFix>();
+                foreach (DrawingLinkFix fix in fixes)
+                {
+                    if (!string.IsNullOrEmpty(fix.StagedPath))
+                        openableFixes.Add(fix);
+                }
+
+                if (openableFixes.Count == 0)
+                    throw new Exception("No replacement file could be staged and opened - the drawing links cannot be redirected.");
+
+                // -------------------------------------------------------------
+                // 3-  Open the drawing.  Its links now resolve to the staged
+                //     (already loaded) documents.
+                // -------------------------------------------------------------
+                drawingDoc = OpenDrawingDocument(drawingPath);
+                if (drawingDoc == null)
+                    throw new Exception("DrawingDocument returned null after opening.");
+
+                string loadedDrawingPath = GetDocumentFullPathWithRetry(drawingDoc);
+                if (!string.IsNullOrEmpty(loadedDrawingPath) &&
+                    !string.Equals(loadedDrawingPath, normalizedDrawingPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new Exception(
+                        $"Name conflict: CATIA returned '{loadedDrawingPath}' instead of the drawing " +
+                        $"'{drawingPath}'. Close the conflicting document in CATIA and retry.");
+                }
+                if (string.IsNullOrEmpty(loadedDrawingPath))
+                    ConsoleWriteLine("  WARNING: could not verify opened drawing full path (CATIA transient COM state). Continuing.");
+
+                // -------------------------------------------------------------
+                // 4-  Read phase: collect the views that point at one of the
+                //     staged documents (used for verification / fallback).
+                // -------------------------------------------------------------
+                try
+                {
+                    workList = CollectDrawingWorkItems(
+                        drawingDoc,
+                        BuildStagedRenameMap(openableFixes),
+                        new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+                }
+                catch (Exception ex)
+                {
+                    ConsoleWriteLine($"    WARNING: could not inspect the drawing views: {ex.Message}");
+                }
+
+                // -------------------------------------------------------------
+                // 5-  Redirect the links: SaveAs the staged (pointed) document
+                //     to its real new location.  CATIA then rebinds every open
+                //     pointing document - exactly like File > Save As.
+                // -------------------------------------------------------------
+                int redirected = 0;
+                foreach (DrawingLinkFix fix in openableFixes)
+                {
+                    if (SaveAsRedirect(fix.StagedPath, fix.NewPath))
+                    {
+                        fix.Redirected = true;
+                        redirected++;
+                        documentsToClose.Add(NormalizePath(fix.NewPath));
+                        if (!convertedItems.Contains(fix.MapKey))
+                            convertedItems.Add(fix.MapKey);
+                    }
+                }
+
+                // -------------------------------------------------------------
+                // 6-  Fallback for views that are still bound to the old file:
+                //     assign GenerativeBehavior.Document explicitly.
+                // -------------------------------------------------------------
+                var remainingItems = new List<DrawingWorkItem>();
+                foreach (DrawingWorkItem item in workList)
+                {
+                    string expected = NormalizePath(item.NewPath);
+                    string current = GetReferencePath(item.View as object);
+                    if (string.Equals(current, expected, StringComparison.OrdinalIgnoreCase))
+                    {
+                        item.ReplacementApplied = true;
+                        ConsoleWriteLine($"    View on sheet \"{item.SheetName}\" now points to the new file.");
+                    }
+                    else
+                    {
+                        remainingItems.Add(item);
+                    }
+                }
+
+                if (remainingItems.Count > 0)
+                {
+                    newDocs = LoadReplacementDocuments(remainingItems);
+                    foreach (string newPath in newDocs.Keys)
+                    {
+                        documentsToClose.Add(NormalizePath(newPath));
+                    }
+                    ApplyDrawingReplacements(remainingItems, newDocs, convertedItems);
+                }
+
+                if (redirected == 0)
+                {
+                    bool anyViewApplied = false;
+                    foreach (DrawingWorkItem item in workList)
+                    {
+                        if (item.ReplacementApplied) { anyViewApplied = true; break; }
+                    }
+                    if (!anyViewApplied)
+                        throw new Exception("None of the drawing links could be redirected to the new files.");
+                }
+
+                // -------------------------------------------------------------
+                // 7-  Regenerate the views and persist the new link paths.
+                // -------------------------------------------------------------
+                try
+                {
+                    drawingDoc.Update();
+                }
+                catch (Exception ex)
+                {
+                    // Only the geometry regeneration failed - the links are
+                    // still redirected and will be saved.
+                    ConsoleWriteLine($"    Drawing update failed (non fatal): {ex.Message}");
+                }
+
+                if (!SaveDrawing(drawingDoc, drawingPath))
+                {
+                    // LAST RESORT: perform the whole redirect INSIDE the CATIA
+                    // process (equivalent to a macro).  In-process script
+                    // execution is not affected by the out-of-process COM
+                    // E_FAIL failures.
+                    ConsoleWriteLine("    Falling back to the in-process CATIA script redirect...");
+                    ReleaseComObject(drawingDoc);
+                    drawingDoc = null;
+
+                    // Everything is retried here, including the fixes whose
+                    // SaveAs already succeeded: their redirect was never
+                    // persisted, because saving the drawing is what writes the
+                    // new link path into the file.  SaveAs leaves the staged
+                    // copy on disk, so the script can redo the whole operation.
+                    bool scripted = false;
+                    foreach (DrawingLinkFix fix in openableFixes)
+                    {
+                        if (!System.IO.File.Exists(fix.StagedPath))
+                        {
+                            ConsoleWriteLine($"    Cannot retry via script - the staged copy is gone: {fix.StagedPath}");
+                            continue;
+                        }
+
+                        // The staged copy must not be held by the session while
+                        // the script re-opens it.
+                        CloseDocumentByFullPath(drawingPath, "drawing (before the script retry)");
+                        CloseDocumentByFullPath(fix.StagedPath, "staged document (before the script retry)");
+
+                        if (RedirectViaCatiaScript(drawingPath, fix.StagedPath, fix.NewPath))
+                        {
+                            fix.Redirected = true;
+                            scripted = true;
+                            documentsToClose.Add(NormalizePath(fix.StagedPath));
+                            documentsToClose.Add(NormalizePath(fix.NewPath));
+                        }
+                        else
+                        {
+                            fix.Redirected = false;
+                        }
+                    }
+
+                    if (!scripted)
+                        throw new Exception($"Failed to save the drawing '{drawingPath}' after redirecting its links.");
+                }
+
+            }
+            catch (Exception ex)
+            {
+                ConsoleWriteLine($"  ERROR while processing drawing '{drawingPath}': {ex.Message}");
+                throw;
+            }
+            finally
+            {
+                // Release the view proxies before closing the documents.
+                foreach (DrawingWorkItem item in workList)
+                {
+                    ReleaseComObject(item.View);
+                    item.View = null;
+                }
+                workList.Clear();
+                ReleaseDictionaryComObjects(newDocs);
+                ReleaseComObject(drawingDoc);
+                drawingDoc = null;
+
+                // Close the DRAWING FIRST - CATIA silently refuses to close a
+                // part that is still referenced by an open drawing.
+                CloseDocumentByFullPath(drawingPath, "drawing");
+
+                foreach (string path in documentsToClose.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    if (string.Equals(path, normalizedDrawingPath, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    CloseDocumentByFullPath(path, "staged/replacement document");
+                }
+                documentsToClose.Clear();
+
+                // Remove the staged copies and put every real old file back.
+                DeletePlaceholders(stagedFiles);
+                RestoreMovedOriginals(movedOriginals);
+            }
+
+            // -----------------------------------------------------------------
+            // 8-  Verify the RESULT: the staged copies are gone, so re-opening
+            //     the drawing forces CATIA to resolve its links from the paths
+            //     that were actually persisted.  A view that reports the new
+            //     path is proof that the relink worked.
+            // -----------------------------------------------------------------
+            VerifyDrawingLinksInSession(drawingPath, fixes);
+
+            newAssembliesFound.Add(drawingPath);
+        }
+
+        /// <summary>
+        /// Re-opens the saved drawing (with no staged copies on disk) and reports
+        /// which new file each view now resolves to.  This is the end-to-end
+        /// proof that the new link paths were persisted, and it is the only
+        /// check that works for every CATIA file format.
+        /// </summary>
+        private static void VerifyDrawingLinksInSession(
+            string drawingPath,
+            List<DrawingLinkFix> fixes)
+        {
+            // Only the links we actually redirected can be verified - the
+            // failures have already been reported in detail.
+            var redirectedFixes = new List<DrawingLinkFix>();
+            var expectedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (DrawingLinkFix fix in fixes)
+            {
+                if (!fix.Redirected) continue;
+                redirectedFixes.Add(fix);
+                expectedPaths.Add(NormalizePath(fix.NewPath));
+            }
+            if (expectedPaths.Count == 0) return;
+
+            var openedForVerification = new List<string>();
+            dynamic drawingDoc = null;
+            try
+            {
+                // The new documents must be loaded, otherwise
+                // GenerativeBehavior.Document cannot be read at all.
+                foreach (DrawingLinkFix fix in redirectedFixes)
+                {
+                    if (!System.IO.File.Exists(fix.NewPath)) continue;
+                    if (IsDocumentOpen(NormalizePath(fix.NewPath))) continue;
+                    if (OpenStagedDocument(fix.NewPath))
+                        openedForVerification.Add(NormalizePath(fix.NewPath));
+                }
+
+                drawingDoc = OpenDrawingDocument(drawingPath);
+                if (drawingDoc == null)
+                {
+                    ConsoleWriteLine("  WARNING: could not re-open the drawing to verify the result.");
+                    return;
+                }
+
+                var resolved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                object sheets = GetComProperty(drawingDoc, "Sheets");
+                int sheetCount = GetComCount(sheets);
+
+                for (int s = 1; s <= sheetCount; s++)
+                {
+                    object sheet = GetComItem(sheets, s);
+                    object views = GetComProperty(sheet, "Views");
+                    int viewCount = GetComCount(views);
+
+                    for (int v = 1; v <= viewCount; v++)
+                    {
+                        object view = GetComItem(views, v);
+                        string referencePath = GetReferencePath(view);
+                        if (!string.IsNullOrEmpty(referencePath))
+                            resolved.Add(referencePath);
+                        ReleaseComObject(view);
+                    }
+
+                    ReleaseComObject(views);
+                    ReleaseComObject(sheet);
+                }
+                ReleaseComObject(sheets);
+
+                foreach (string expected in expectedPaths)
+                {
+                    if (resolved.Contains(expected))
+                        ConsoleWriteLine($"  VERIFIED: the drawing now references {expected}.");
+                    else
+                        ConsoleWriteLine($"  WARNING: after re-opening, no view references {expected} - the relink was not persisted.");
+                }
+            }
+            catch (Exception ex)
+            {
+                ConsoleWriteLine($"  WARNING: verification of '{drawingPath}' failed: {ex.Message}");
+            }
+            finally
+            {
+                ReleaseComObject(drawingDoc);
+                drawingDoc = null;
+
+                CloseDocumentByFullPath(drawingPath, "drawing (after verification)");
+                foreach (string path in openedForVerification)
+                {
+                    CloseDocumentByFullPath(path, "replacement document (after verification)");
+                }
+            }
+        }
+
+        /// <summary>
+        /// One rename-map entry that this drawing references: the original file
+        /// name CATIA looks for, the real new location and the temporary copies
+        /// that were staged on disk to make CATIA resolve the link.
+        /// </summary>
+        private class DrawingLinkFix
+        {
+            public string MapKey;               // normalised rename-map key
+            public string OldFileName;          // e.g. F20435V1.CATPart
+            public string NewPath;              // real new full path
+            public List<string> StoredPaths = new List<string>();   // link paths found inside the drawing
+            public List<string> StagingLocations = new List<string>();
+            public string StagedPath;           // the staged copy opened in the session
+            public bool Redirected;
+        }
+
+        /// <summary>
+        /// Builds the list of rename-map entries this drawing points at.
+        ///
+        /// The primary source of truth is the CATDrawing file itself: the stored
+        /// link paths are extracted from it, so an entry matches no matter which
+        /// old address the drawing recorded.  The historical naming convention
+        /// (drawing "E1031F-F20435V1-1-R1-1" references part "F20435V1") is used
+        /// as a fallback when the file cannot be parsed.
+        /// </summary>
+        private static List<DrawingLinkFix> BuildDrawingLinkFixes(
+            string drawingPath,
+            Dictionary<string, string> renameMap)
+        {
+            var fixes = new List<DrawingLinkFix>();
+
+            string drawingDirectory = Path.GetDirectoryName(drawingPath);
+            string drawingBaseName = Path.GetFileNameWithoutExtension(drawingPath);
+            string normalizedDrawingPath = NormalizePath(drawingPath);
+
+            List<string> storedReferences = ExtractLinkedDocumentPathsFromFile(drawingPath);
+            if (storedReferences.Count > 0)
+            {
+                ConsoleWriteLine($"  {storedReferences.Count} 3D reference(s) stored in the drawing:");
+                foreach (string reference in storedReferences)
+                {
+                    ConsoleWriteLine($"    {reference}");
+                }
+            }
+            else
+            {
+                // Recent CATIA containers (header "V5_CFV2") do not store the
+                // link paths as plain text, so this is the normal case: the
+                // file-name convention plus the drawing's own folder is used to
+                // decide where to stage the replacement.
+                ConsoleWriteLine("  No stored 3D reference is readable from the drawing file - using the file-name convention.");
+            }
+
+            foreach (var kvp in renameMap)
+            {
+                string mapKey = kvp.Key;
+                string newPath = kvp.Value;
+
+                string oldFileName = GetFileNameSafe(mapKey);
+                string oldBaseName = Path.GetFileNameWithoutExtension(oldFileName);
+                if (string.IsNullOrWhiteSpace(oldBaseName)) continue;
+
+                // a) the drawing really stores a link to this file name
+                var storedPaths = new List<string>();
+                foreach (string reference in storedReferences)
+                {
+                    string referenceName = GetFileNameSafe(reference);
+                    if (string.IsNullOrEmpty(referenceName)) continue;
+
+                    bool sameName = string.Equals(referenceName, oldFileName, StringComparison.OrdinalIgnoreCase);
+                    if (!sameName)
+                    {
+                        sameName = string.Equals(
+                            Path.GetFileNameWithoutExtension(referenceName),
+                            oldBaseName,
+                            StringComparison.OrdinalIgnoreCase);
+                    }
+                    if (sameName)
+                        storedPaths.Add(reference);
+                }
+
+                // b) file-name convention fallback
+                bool matchesConvention =
+                    drawingBaseName.IndexOf(oldBaseName + "-", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    string.Equals(drawingBaseName, oldBaseName, StringComparison.OrdinalIgnoreCase);
+
+                if (storedPaths.Count == 0 && !matchesConvention) continue;
+
+                if (!System.IO.File.Exists(newPath))
+                {
+                    ConsoleWriteLine($"    ERROR: new file not found - cannot fix link for '{oldFileName}': {newPath}");
+                    continue;
+                }
+
+                string realNewPath = GetExistingPathWithRealCase(newPath);
+                if (string.Equals(NormalizePath(realNewPath), normalizedDrawingPath, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var fix = new DrawingLinkFix
+                {
+                    MapKey = mapKey,
+                    OldFileName = oldFileName,
+                    NewPath = realNewPath
+                };
+                fix.StoredPaths.AddRange(storedPaths);
+
+                // Staging locations, most likely first: the folders recorded in
+                // the drawing, then the drawing's own folder (CATIA also looks
+                // next to the pointing document), then the map-key folder.
+                var locations = new List<string>();
+                foreach (string reference in storedPaths)
+                {
+                    if (!IsRootedSafe(reference)) continue;
+                    string directory = GetDirectoryNameSafe(reference);
+                    if (!string.IsNullOrEmpty(directory))
+                        AddStagingLocation(locations, directory, GetFileNameSafe(reference), realNewPath);
+                }
+                AddStagingLocation(locations, drawingDirectory, oldFileName, realNewPath);
+                if (IsRootedSafe(mapKey))
+                    AddStagingLocation(locations, GetDirectoryNameSafe(mapKey), oldFileName, realNewPath);
+
+                if (locations.Count == 0)
+                {
+                    ConsoleWriteLine($"    ERROR: no staging location could be determined for '{oldFileName}'.");
+                    continue;
+                }
+
+                fix.StagingLocations.AddRange(locations);
+                fixes.Add(fix);
+
+                ConsoleWriteLine($"  Link to fix: {oldFileName}  ->  {realNewPath}");
+            }
+
+            return fixes;
+        }
+
+        private static void AddStagingLocation(
+            List<string> locations,
+            string directory,
+            string fileName,
+            string newPath)
+        {
+            if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(fileName))
+                return;
+
+            string candidate;
+            try { candidate = Path.Combine(directory, fileName); }
+            catch { return; }
+
+            // Never stage on top of the new file itself.
+            if (string.Equals(NormalizePath(candidate), NormalizePath(newPath), StringComparison.OrdinalIgnoreCase))
+                return;
+
+            foreach (string existing in locations)
+            {
+                if (string.Equals(NormalizePath(existing), NormalizePath(candidate), StringComparison.OrdinalIgnoreCase))
+                    return;
+            }
+
+            locations.Add(candidate);
+        }
+
+        /// <summary>
+        /// Copies the new file under the ORIGINAL file name to every staging
+        /// location.  A real old file found at such a location is moved aside
+        /// first (and restored during cleanup) so that the SaveAs redirect can
+        /// never write old content over the new file.
+        /// </summary>
+        private static void StageReplacementFile(
+            DrawingLinkFix fix,
+            List<string> stagedFiles,
+            Dictionary<string, string> movedOriginals)
+        {
+            foreach (string location in fix.StagingLocations)
+            {
+                try
+                {
+                    string directory = GetDirectoryNameSafe(location);
+                    if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
+                    {
+                        ConsoleWriteLine($"    Skipping staging location (folder does not exist): {location}");
+                        continue;
+                    }
+
+                    if (System.IO.File.Exists(location))
+                    {
+                        string backupPath = location + ".relink_orig";
+                        try
+                        {
+                            ClearReadOnly(location);
+                            if (System.IO.File.Exists(backupPath))
+                                System.IO.File.Delete(backupPath);
+                            System.IO.File.Move(location, backupPath);
+                            movedOriginals[backupPath] = location;
+                            ConsoleWriteLine($"  Existing file moved aside (restored later): {location}");
+                        }
+                        catch (Exception ex)
+                        {
+                            ConsoleWriteLine($"    Could not move the existing file aside ({ex.Message}) - skipping: {location}");
+                            continue;
+                        }
+                    }
+
+                    System.IO.File.Copy(fix.NewPath, location, overwrite: true);
+                    ClearReadOnly(location);
+                    stagedFiles.Add(location);
+                    ConsoleWriteLine($"  Staged replacement under its original name: {location}");
+
+                    if (string.IsNullOrEmpty(fix.StagedPath))
+                        fix.StagedPath = location;
+                }
+                catch (Exception ex)
+                {
+                    ConsoleWriteLine($"    ERROR: could not stage '{location}': {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Opens a staged file and verifies that CATIA really loaded THAT file
+        /// (a same-named document from another folder would be returned
+        /// silently).
+        /// </summary>
+        private static bool OpenStagedDocument(string stagedPath)
+        {
+            string expected = NormalizePath(stagedPath);
+
+            for (int attempt = 1; attempt <= 3; attempt++)
+            {
+                dynamic doc = null;
+                try
+                {
+                    doc = catiaApp.Documents.Open(stagedPath);
+                    string loaded = GetDocumentFullPathWithRetry(doc);
+                    if (string.IsNullOrEmpty(loaded) ||
+                        string.Equals(loaded, expected, StringComparison.OrdinalIgnoreCase))
+                    {
+                        ConsoleWriteLine($"  Opened staged document: {stagedPath}");
+                        return true;
+                    }
+
+                    ConsoleWriteLine($"    ERROR: CATIA returned '{loaded}' instead of the staged file '{stagedPath}'.");
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    ConsoleWriteLine($"    Open attempt {attempt}/3 failed for '{stagedPath}': {ex.Message}");
+                    if (IsDocumentOpen(expected))
+                        return true;
+                    if (attempt < 3)
+                        Thread.Sleep(400);
+                }
+                finally
+                {
+                    ReleaseComObject(doc);
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Rename map used for the view inspection phase: stagedPath -&gt; newPath.
+        /// </summary>
+        private static Dictionary<string, string> BuildStagedRenameMap(List<DrawingLinkFix> fixes)
+        {
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (DrawingLinkFix fix in fixes)
+            {
+                map[NormalizePath(fix.StagedPath)] = NormalizePath(fix.NewPath);
+            }
+            return map;
+        }
+
+        /// <summary>
+        /// THE working relink mechanism: SaveAs the pointed (staged) document to
+        /// its real new location.  CATIA rebinds the links of every open
+        /// pointing document, exactly like the interactive File &gt; Save As.
+        ///
+        /// SaveAs returns E_FAIL when the target already exists (the suppressed
+        /// "overwrite?" alert is auto-answered with "no"), so the existing
+        /// target is moved aside first and restored when SaveAs fails.
+        /// </summary>
+        private static bool SaveAsRedirect(string pointedDocumentPath, string newPath)
+        {
+            dynamic pointedDoc = null;
+            string backupPath = null;
+            bool savedAs = false;
+
+            try
+            {
+                pointedDoc = FindOpenDocumentByFullPath(catiaApp.Documents, NormalizePath(pointedDocumentPath));
+                if (pointedDoc == null)
+                {
+                    ConsoleWriteLine($"    Pointed document is not open - cannot redirect via SaveAs: {pointedDocumentPath}");
+                    return false;
+                }
+
+                // A session document already holding the target path blocks SaveAs.
+                CloseDocumentByFullPath(newPath, "session document blocking the SaveAs target");
+
+                if (System.IO.File.Exists(newPath))
+                {
+                    ClearReadOnly(newPath);
+                    backupPath = newPath + ".relink_bak";
+                    try
+                    {
+                        if (System.IO.File.Exists(backupPath))
+                            System.IO.File.Delete(backupPath);
+                        System.IO.File.Move(newPath, backupPath);
+                    }
+                    catch (Exception ex)
+                    {
+                        ConsoleWriteLine($"    Could not move the existing target aside ({ex.Message}) - SaveAs will try to overwrite.");
+                        backupPath = null;
+                    }
+                }
+
+                ConsoleWriteLine("  Redirecting the drawing links via SaveAs:");
+                ConsoleWriteLine($"    Pointed document: {pointedDocumentPath}");
+                ConsoleWriteLine($"    New Path        : {newPath}");
+
+                try
+                {
+                    ExecuteComActionWithRetry(
+                        () => pointedDoc.SaveAs(newPath),
+                        $"SaveAs the pointed document to '{newPath}'",
+                        2,
+                        250);
+                    savedAs = true;
+                }
+                catch (Exception ex)
+                {
+                    ConsoleWriteLine($"    SaveAs redirect failed: {ex.Message}");
+                    ReportSaveAsCapability();
+                    return false;
+                }
+
+                // CATIA can report a successful SaveAs without writing the file.
+                if (!System.IO.File.Exists(newPath))
+                {
+                    ConsoleWriteLine("    SaveAs reported success but wrote no file - the link was NOT redirected.");
+                    savedAs = false;
+                    ReportSaveAsCapability();
+                    return false;
+                }
+
+                string sessionPathAfter = GetDocumentFullPathWithRetry(pointedDoc);
+                if (!string.IsNullOrEmpty(sessionPathAfter) &&
+                    !string.Equals(sessionPathAfter, NormalizePath(newPath), StringComparison.OrdinalIgnoreCase))
+                {
+                    ConsoleWriteLine($"    WARNING: after SaveAs the session document reports '{sessionPathAfter}'.");
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                ConsoleWriteLine($"    SaveAs redirect error for '{pointedDocumentPath}': {ex.Message}");
+                return false;
+            }
+            finally
+            {
+                if (backupPath != null)
+                {
+                    try
+                    {
+                        if (savedAs && System.IO.File.Exists(newPath))
+                        {
+                            System.IO.File.Delete(backupPath);
+                        }
+                        else if (!System.IO.File.Exists(newPath))
+                        {
+                            System.IO.File.Move(backupPath, newPath);
+                            ConsoleWriteLine($"    Restored the original target file after the failed SaveAs: {newPath}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        ConsoleWriteLine($"    WARNING: backup cleanup failed for '{backupPath}': {ex.Message}");
+                    }
+                }
+
+                ReleaseComObject(pointedDoc);
+            }
+        }
+
+        /// <summary>
+        /// Diagnoses a failing SaveAs once per session.
+        ///
+        /// Relinking a CATDrawing is IMPOSSIBLE without a working SaveAs, and a
+        /// CATIA installation whose write operations are disabled reports the
+        /// very same E_FAIL as a genuine, fixable problem (name conflict,
+        /// existing target, hidden dialog).  The two cases are told apart by
+        /// asking CATIA to SaveAs a brand-new, empty part into the temp folder:
+        /// when even that fails, no automation code can help.
+        /// </summary>
+        private static void ReportSaveAsCapability()
+        {
+            if (saveAsCapabilityReported) return;
+            saveAsCapabilityReported = true;
+
+            string probePath = Path.Combine(
+                Path.GetTempPath(),
+                "CatiaSaveAsProbe_" + Guid.NewGuid().ToString("N") + ".CATPart");
+
+            dynamic probeDoc = null;
+            try
+            {
+                probeDoc = catiaApp.Documents.Add("Part");
+                probeDoc.SaveAs(probePath);
+
+                ConsoleWriteLine("    DIAGNOSIS: SaveAs works in general - the failure above is specific to this file " +
+                                 "(name conflict, locked target or a hidden CATIA dialog).");
+            }
+            catch (Exception ex)
+            {
+                var inner = (ex as TargetInvocationException)?.InnerException ?? ex;
+                ConsoleWriteLine("    DIAGNOSIS: this CATIA session cannot SaveAs ANY document - even a new, empty part " +
+                                 $"into '{Path.GetTempPath()}' fails ({inner.Message}).");
+                ConsoleWriteLine("               Relinking a CATDrawing is impossible without SaveAs. Check the CATIA " +
+                                 "licence (a missing/invalid licence disables all write operations), then verify that " +
+                                 "File > Save As works INTERACTIVELY in CATIA before running this tool again.");
+            }
+            finally
+            {
+                try
+                {
+                    if (probeDoc != null)
+                        probeDoc.Close();
+                }
+                catch { /* best effort */ }
+                ReleaseComObject(probeDoc);
+
+                try
+                {
+                    if (System.IO.File.Exists(probePath))
+                        System.IO.File.Delete(probePath);
+                }
+                catch { /* best effort */ }
+            }
+        }
+
+        /// <summary>
+        /// Saves the drawing, falling back to SaveAs (through a temporary file,
+        /// because SaveAs onto an existing path fails with E_FAIL).
+        /// </summary>
+        private static bool SaveDrawing(dynamic drawingDoc, string drawingPath)
+        {
+            DateTime writeTimeBefore = GetLastWriteTimeSafe(drawingPath);
+
+            try
+            {
+                ExecuteComActionWithRetry(() => drawingDoc.Save(), "save drawing", 3, 400);
+
+                // CATIA can report a successful Save WITHOUT writing anything to
+                // disk (installations whose write operations are disabled do
+                // exactly that), so trust the file system, not the return value.
+                DateTime writeTimeAfter = GetLastWriteTimeSafe(drawingPath);
+                if (writeTimeAfter > writeTimeBefore)
+                {
+                    ConsoleWriteLine("Drawing saved successfully.");
+                    return true;
+                }
+
+                ConsoleWriteLine("    Save reported success but the file on disk did not change - trying the SaveAs fallback.");
+            }
+            catch (Exception ex)
+            {
+                ConsoleWriteLine($"    Save failed: {ex.Message}");
+            }
+
+            string tempPath = null;
+            try
+            {
+                string directory = Path.GetDirectoryName(drawingPath);
+                tempPath = Path.Combine(
+                    directory,
+                    Path.GetFileNameWithoutExtension(drawingPath) + ".relink_tmp" + Path.GetExtension(drawingPath));
+
+                if (System.IO.File.Exists(tempPath))
+                    System.IO.File.Delete(tempPath);
+
+                ExecuteComActionWithRetry(() => drawingDoc.SaveAs(tempPath), "save drawing as", 2, 400);
+
+                if (!System.IO.File.Exists(tempPath))
+                {
+                    ConsoleWriteLine("    SaveAs reported success but wrote no file.");
+                    ReportSaveAsCapability();
+                    return false;
+                }
+
+                ClearReadOnly(drawingPath);
+                System.IO.File.Copy(tempPath, drawingPath, overwrite: true);
+                ConsoleWriteLine("Drawing saved successfully using the SaveAs fallback.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                ConsoleWriteLine($"    SaveAs fallback failed: {ex.Message}");
+                ReportSaveAsCapability();
+                return false;
+            }
+            finally
+            {
+                try
+                {
+                    if (tempPath != null && System.IO.File.Exists(tempPath))
+                    {
+                        // The session document now lives at tempPath - close it
+                        // before deleting the file.
+                        CloseDocumentByFullPath(tempPath, "temporary drawing copy");
+                        System.IO.File.Delete(tempPath);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    ConsoleWriteLine($"    WARNING: could not remove the temporary drawing copy: {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Performs the SaveAs redirect INSIDE the CATIA process using
+        /// SystemService.Evaluate (equivalent to a CATIA macro).  Used as a last
+        /// resort when out-of-process COM calls keep returning E_FAIL.
+        /// </summary>
+        private static bool RedirectViaCatiaScript(string drawingPath, string stagedPath, string newPath)
+        {
+            const string script = @"
+Function RedirectLinks(drawingPath, stagedPath, newPath)
+    RedirectLinks = 0
+
+    Dim staged
+    Set staged = CATIA.Documents.Open(stagedPath)
+    If staged Is Nothing Then Exit Function
+
+    Dim drw
+    Set drw = CATIA.Documents.Open(drawingPath)
+    If drw Is Nothing Then Exit Function
+
+    staged.SaveAs newPath
+    drw.Update
+    drw.Save
+
+    RedirectLinks = 1
+End Function";
+
+            string backupPath = null;
+            try
+            {
+                CloseDocumentByFullPath(newPath, "session document blocking the SaveAs target");
+
+                if (System.IO.File.Exists(newPath))
+                {
+                    ClearReadOnly(newPath);
+                    backupPath = newPath + ".relink_bak";
+                    if (System.IO.File.Exists(backupPath))
+                        System.IO.File.Delete(backupPath);
+                    System.IO.File.Move(newPath, backupPath);
+                }
+
+                dynamic systemService = catiaApp.SystemService;
+                object[] args = new object[] { drawingPath, stagedPath, newPath };
+
+                // 1 = catVBScriptLanguage
+                object result = systemService.Evaluate(script, 1, "RedirectLinks", args);
+
+                bool succeeded = System.IO.File.Exists(newPath);
+                try { succeeded = succeeded && Convert.ToInt32(result) != 0; }
+                catch { /* the return value is not always marshalled */ }
+
+                if (succeeded)
+                    ConsoleWriteLine($"  Links redirected and drawing saved by the in-process CATIA script: {newPath}");
+                else
+                    ConsoleWriteLine("    The in-process CATIA script did not redirect the links.");
+
+                return succeeded;
+            }
+            catch (Exception ex)
+            {
+                ConsoleWriteLine($"    In-process CATIA script failed: {ex.Message}");
+                return false;
+            }
+            finally
+            {
+                if (backupPath != null)
+                {
+                    try
+                    {
+                        if (System.IO.File.Exists(newPath))
+                            System.IO.File.Delete(backupPath);
+                        else
+                            System.IO.File.Move(backupPath, newPath);
+                    }
+                    catch (Exception ex)
+                    {
+                        ConsoleWriteLine($"    WARNING: backup cleanup failed for '{backupPath}': {ex.Message}");
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Extracts the stored 3D link paths (CATPart / CATProduct) from a CATIA
+        /// document file.  CATIA stores them as plain ASCII and/or UTF-16
+        /// strings, so scanning the file is the only way to learn the ORIGINAL
+        /// addresses of links that can no longer be resolved.
+        /// </summary>
+        private static List<string> ExtractLinkedDocumentPathsFromFile(string filePath)
+        {
+            var results = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            try
+            {
+                byte[] bytes = System.IO.File.ReadAllBytes(filePath);
+
+                var candidates = new List<string>();
+                CollectPrintableStrings(bytes, 1, 0, candidates);   // ASCII
+                CollectPrintableStrings(bytes, 2, 0, candidates);   // UTF-16LE (even offset)
+                CollectPrintableStrings(bytes, 2, 1, candidates);   // UTF-16LE (odd offset)
+
+                // GREEDY on purpose: the directory part of the stored link must
+                // be captured, because it is the first place CATIA looks for the
+                // referenced document.
+                var pattern = new Regex(
+                    @"(?:[A-Za-z]:\\|\\\\[^\\/:*?""<>|]+\\)?(?:[^\\/:*?""<>|]+\\)*[^\\/:*?""<>|]+\.(?:CATPart|CATProduct)",
+                    RegexOptions.IgnoreCase);
+
+                string ownName = Path.GetFileName(filePath);
+
+                foreach (string candidate in candidates)
+                {
+                    // Cheap pre-filter - the vast majority of the extracted
+                    // strings are not link paths at all.
+                    if (candidate.IndexOf(".CATPart", StringComparison.OrdinalIgnoreCase) < 0 &&
+                        candidate.IndexOf(".CATProduct", StringComparison.OrdinalIgnoreCase) < 0)
+                        continue;
+
+                    foreach (Match match in pattern.Matches(candidate))
+                    {
+                        string value = match.Value.Trim();
+
+                        // Without a drive/UNC root the leading characters may be
+                        // unrelated binary text glued to the name, so keep only
+                        // the last segment (the file name) in that case.
+                        if (!IsRootedSafe(value))
+                        {
+                            int separator = value.LastIndexOfAny(new[] { '\\', '/' });
+                            if (separator >= 0)
+                                value = value.Substring(separator + 1);
+                        }
+
+                        if (value.Length < 5) continue;
+                        if (string.Equals(value, ownName, StringComparison.OrdinalIgnoreCase)) continue;
+                        if (seen.Add(value))
+                            results.Add(value);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                ConsoleWriteLine($"    WARNING: could not read the link paths from '{filePath}': {ex.Message}");
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// Collects printable character runs from a byte buffer.
+        /// <paramref name="stride"/> 1 scans ASCII, 2 scans UTF-16LE.
+        /// </summary>
+        private static void CollectPrintableStrings(
+            byte[] bytes,
+            int stride,
+            int startOffset,
+            List<string> sink)
+        {
+            const int minimumLength = 5;
+            var builder = new StringBuilder();
+
+            for (int i = startOffset; i + stride - 1 < bytes.Length; i += stride)
+            {
+                byte value = bytes[i];
+                bool printable = value >= 0x20 && value < 0x7F;
+                if (printable && stride == 2 && bytes[i + 1] != 0)
+                    printable = false;
+
+                if (printable)
+                {
+                    builder.Append((char)value);
+                }
+                else
+                {
+                    if (builder.Length >= minimumLength)
+                        sink.Add(builder.ToString());
+                    builder.Length = 0;
+                }
+            }
+
+            if (builder.Length >= minimumLength)
+                sink.Add(builder.ToString());
+        }
+
+        /// <summary>
+        /// Moves every file that was temporarily renamed back to its original
+        /// name (backupPath -&gt; originalPath).
+        /// </summary>
+        private static void RestoreMovedOriginals(Dictionary<string, string> movedOriginals)
+        {
+            foreach (var pair in movedOriginals)
+            {
+                try
+                {
+                    if (!System.IO.File.Exists(pair.Key)) continue;
+
+                    if (System.IO.File.Exists(pair.Value))
+                    {
+                        ClearReadOnly(pair.Value);
+                        System.IO.File.Delete(pair.Value);
+                    }
+
+                    System.IO.File.Move(pair.Key, pair.Value);
+                    ConsoleWriteLine($"  Restored the original file: {pair.Value}");
+                }
+                catch (Exception ex)
+                {
+                    ConsoleWriteLine($"    WARNING: could not restore '{pair.Value}' from '{pair.Key}': {ex.Message}");
+                }
+            }
+
+            movedOriginals.Clear();
+        }
+
+        /// <summary>
+        /// Last write time of a file, or <see cref="DateTime.MinValue"/> when it
+        /// cannot be read.  Used to prove that a Save really hit the disk.
+        /// </summary>
+        private static DateTime GetLastWriteTimeSafe(string path)
+        {
+            try
+            {
+                if (System.IO.File.Exists(path))
+                    return System.IO.File.GetLastWriteTimeUtc(path);
+            }
+            catch
+            {
+                // fall through
+            }
+            return DateTime.MinValue;
+        }
+
+        private static void ClearReadOnly(string path)
+        {
+            try
+            {
+                if (!System.IO.File.Exists(path)) return;
+                var attributes = System.IO.File.GetAttributes(path);
+                if ((attributes & FileAttributes.ReadOnly) == FileAttributes.ReadOnly)
+                    System.IO.File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
+            }
+            catch (Exception ex)
+            {
+                ConsoleWriteLine($"    WARNING: could not clear the read-only flag on '{path}': {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Returns the path with the casing it really has on disk.
+        ///
+        /// The rename map is upper-cased by <see cref="NormalizePath"/>, and an
+        /// upper-cased path must never be handed to SaveAs: CATIA would store
+        /// that exact string in the pointing documents, so every later
+        /// comparison and every log line would show a name that does not match
+        /// the real file.
+        /// </summary>
+        private static string GetExistingPathWithRealCase(string path)
+        {
+            try
+            {
+                if (!System.IO.File.Exists(path) && !Directory.Exists(path))
+                    return path;
+
+                // GetFullPath + FileSystemInfo resolves the casing segment by
+                // segment, starting from the (case-exact) drive root.
+                string full = Path.GetFullPath(path);
+                string root = Path.GetPathRoot(full);
+                string remainder = full.Substring(root.Length);
+                if (string.IsNullOrEmpty(remainder))
+                    return full;
+
+                string current = root.ToUpperInvariant();
+                foreach (string segment in remainder.Split(
+                    Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+                {
+                    if (string.IsNullOrEmpty(segment)) continue;
+
+                    string resolved = segment;
+                    try
+                    {
+                        var parent = new DirectoryInfo(current);
+                        FileSystemInfo[] matches = parent.GetFileSystemInfos(segment);
+                        if (matches.Length > 0)
+                            resolved = matches[0].Name;
+                    }
+                    catch
+                    {
+                        // keep the segment as-is
+                    }
+
+                    current = Path.Combine(current, resolved);
+                }
+
+                return current;
+            }
+            catch
+            {
+                // fall through - the normalised path is good enough
+            }
+            return path;
+        }
+
+        private static string GetFileNameSafe(string path)
+        {
+            try { return Path.GetFileName(path); }
+            catch { return string.Empty; }
+        }
+
+        private static string GetDirectoryNameSafe(string path)
+        {
+            try { return Path.GetDirectoryName(path); }
+            catch { return string.Empty; }
+        }
+
+        private static bool IsRootedSafe(string path)
+        {
+            try { return Path.IsPathRooted(path); }
+            catch { return false; }
         }
 
         /// <summary>

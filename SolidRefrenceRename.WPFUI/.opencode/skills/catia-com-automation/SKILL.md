@@ -124,6 +124,44 @@ whenever matching drawings to parts.
     only geometry regeneration failed) - log and continue to Save. But a
     Save failure IS fatal; SaveAs to the same path is the fallback.
 
+2e. **This dev machine's CATIA (B29) cannot save AT ALL - do not chase it.**
+   Measured with standalone probes (2026-08): `Documents.Open` and `Save()`
+   return success, but `SaveAs` fails with E_FAIL for EVERY document,
+   including a brand-new empty `Documents.Add("Part")` saved into
+   `%TEMP%`. It fails identically out-of-process, via reflection, and
+   in-process via `SystemService.Evaluate` (`Err.Description = "The method
+   SaveAs failed"`, source `CATIAPartDocument`). `ExportData` fails too,
+   while CATIA's own `FileSystem.CopyFile` works. Worse, `Save()` reports
+   success and the file on disk NEVER changes (verified by renaming a sheet,
+   saving, reopening: the rename is gone; mtime/length unchanged). The
+   install has ~3535 `*.beforeSPK` patched binaries and a patched
+   `license.lic` (`AF_WIN_PATCH`), i.e. write operations are disabled by the
+   crack. Consequence: `ProcessDrawing` CANNOT be verified end-to-end here;
+   it must be validated on a properly licensed CATIA. Before debugging any
+   save/relink failure, check `File > Save As` interactively first -
+   `ReportSaveAsCapability()` in CatiaUtils.cs performs exactly this probe
+   and logs the diagnosis once per session.
+
+2f. **Never trust a CATIA "success" return for a write.** Because of 2e,
+   every save path verifies the FILE SYSTEM afterwards: `SaveAsRedirect`
+   checks `File.Exists(newPath)`, and `SaveDrawing` compares the drawing's
+   `LastWriteTimeUtc` before/after `Save()`. Keep these checks.
+
+2g. **Staging beats placeholders.** `ProcessDrawing` copies the NEW file
+   under the OLD file name next to the drawing (`StageReplacementFile`),
+   opens it, then `SaveAs`-es that staged document to its real new path.
+   Any real file already sitting at a staging location is moved to
+   `<name>.relink_orig` and restored in the finally block, so old content can
+   never overwrite the new file. Staged copies are byte-copies of the new
+   file, so the redirect is content-safe.
+
+2h. **Link paths are NOT plain text in modern CATIA files.** Files with the
+   `V5_CFV2` header (checked on a real 722 KB CATDrawing) contain zero
+   occurrences of "CATPart"/"CATProduct" in ASCII, UTF-16, or any zlib
+   stream. `ExtractLinkedDocumentPathsFromFile` therefore usually returns
+   nothing, and matching falls back to the file-name convention. Do not
+   build features that depend on reading link paths from disk.
+
 ## Debugging E_FAIL (0x80004005) checklist
 
 When a user reports E_FAIL from Open/Save/Update, check in this order:
