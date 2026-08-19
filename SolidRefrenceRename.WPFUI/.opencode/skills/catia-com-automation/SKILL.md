@@ -180,6 +180,45 @@ whenever matching drawings to parts.
    nothing, and matching falls back to the file-name convention. Do not
    build features that depend on reading link paths from disk.
 
+## CATProduct component relinking (ProcessProduct)
+
+3a. **A component's `Name` / `PartNumber` have NOTHING to do with its file
+   name.** Measured on `E1031FA-FA20174V1-2-R1-1.CATProduct`: the three
+   children are `Name='Cover Main Part'` / `PartNumber='DR01AAA01'`,
+   `'Cover-Connector leg part 1'` / `DR01AAA02`, `'connector-leg-2.1'` /
+   `DR01AAA03`, while the files are `F20427V1.CATPart`, `F20428V1.CATPart`,
+   `F20429V1.CATPart`. The original code matched the rename map against
+   `child.Name` via `FindMatchingKeyInMap`, so it matched NOTHING and silently
+   replaced nothing. The ONLY reliable file identity is
+   `child.ReferenceProduct.Parent.FullName` - see `GetComponentFilePath` and
+   `FindMatchingKeyForFile`.
+
+3b. **An UNRESOLVED component throws on almost every property.** When the
+   referenced file is missing from disk, `ReferenceProduct` throws "The method
+   ReferenceProduct failed" and `PartNumber` throws too (`Name` still works,
+   since it is stored in the product itself). This is the detection mechanism
+   for "component not resolved". Consequence: you cannot learn which file a
+   broken component wants - the product file stores no plaintext path either
+   (`V5_CFV2`, zero `CATPart` strings in ASCII/UTF-16/zlib). So `ProcessProduct`
+   stages the replacement under the OLD file name in the product's folder
+   FIRST, then opens the product; the components resolve, and the file paths
+   become readable.
+
+3c. **`Products.ReplaceComponent(child, newPath, true)` works** once the
+   component is resolved - verified by reading
+   `ReferenceProduct.Parent.FullName` back, and by reopening the saved product
+   with nothing staged (all 3 components pointed at the new
+   `C:\CatiaParts\...` paths). Unlike drawings, products need NO SaveAs
+   trickery: plain `Save()` persists the new references. The referenced part
+   files are left byte-identical (verified by hash).
+
+3d. **"Nothing to relink" is SUCCESS, not failure.** Re-running on an
+   already-fixed assembly must not error. `ProductReplaceOutcome` tallies
+   Replaced / Failed / AlreadyUpToDate / Unresolved, and only a non-zero
+   `Failed` (or a Save that does not change the file) is an error. Components
+   already pointing at a rename-map VALUE are detected via `knownNewPaths` -
+   matching by the old key alone would report them as "no match".
+
 ## Debugging E_FAIL (0x80004005) checklist
 
 When a user reports E_FAIL from Open/Save/Update, check in this order:

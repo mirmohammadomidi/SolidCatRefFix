@@ -262,42 +262,164 @@ namespace CatiaReferenceRename.WPFUI.Lib
 
         #region ──  Product (CATProduct) handling  ───────────────────────────────
 
+        /// <summary>
+        /// Processes a CATProduct by relinking its components to new file
+        /// locations.
+        ///
+        /// Example:
+        ///   productPath: C:\Catia\E1031FA-FA20174V1-2-R1-1.CATProduct
+        ///   renameMap  : { F20427V1.CATPart -> C:\CatiaParts\E1031F-F20427V1-3-R1-1.CATPart, ... }
+        ///
+        /// Why it is done this way (all empirically verified):
+        ///   * A component's `Name` is the INSTANCE name chosen by the designer
+        ///     ("Cover Main Part"), and `PartNumber` is an internal id
+        ///     ("DR01AAA01"). NEITHER has anything to do with the file name, so
+        ///     matching the rename map against `child.Name` - as the old code
+        ///     did - can never work for real assemblies. The only reliable
+        ///     identity of a component's FILE is
+        ///     `child.ReferenceProduct.Parent.FullName`.
+        ///   * That property (and `PartNumber`) throws "The method
+        ///     ReferenceProduct failed" while the component is UNRESOLVED, i.e.
+        ///     when the referenced file is missing from disk. Links resolve only
+        ///     at open time, so the replacement files are first staged under
+        ///     their original names, and the product is opened afterwards.
+        ///   * With resolved components, `Products.ReplaceComponent(child,
+        ///     newPath, true)` relinks correctly (verified by reading
+        ///     `ReferenceProduct.Parent.FullName` back).
+        /// </summary>
         private static void ProcessProduct(
             string productPath,
             Dictionary<string, string> renameMap,
             List<string> convertedItems,
             List<string> newAssembliesFound)
         {
-            ConsoleWriteLine($"\nOpening assembly: {productPath}");
+            ConsoleWriteLine($"\nProcessing assembly: {productPath}");
+
+            string normalizedProductPath = NormalizePath(productPath);
+
+            // -----------------------------------------------------------------
+            // 0-  CATIA resolves external links ONLY while a document is being
+            //     opened, so a product that is already loaded keeps its
+            //     unresolved components. Close it and re-open after staging.
+            // -----------------------------------------------------------------
+            if (IsDocumentOpen(normalizedProductPath))
+            {
+                ConsoleWriteLine("  Assembly is already open - closing it so CATIA re-resolves its links on open.");
+                CloseDocumentByFullPath(productPath, "assembly (force fresh link resolution)");
+            }
+
+            var stagedFiles = new List<string>();
+            var movedOriginals = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var documentsToClose = new List<string>();
 
             productDoc = null;
             try
             {
-                productDoc = (ProductDocument)catiaApp.Documents.Open(productPath);
+                // -------------------------------------------------------------
+                // 1-  Stage every replacement file under its ORIGINAL name in
+                //     the assembly's folder, so the components resolve on open.
+                // -------------------------------------------------------------
+                foreach (var kvp in renameMap)
+                {
+                    StageProductComponent(productPath, kvp.Key, kvp.Value, stagedFiles, movedOriginals);
+                }
+
+                // -------------------------------------------------------------
+                // 2-  Open the assembly with resolvable links.
+                // -------------------------------------------------------------
+                CloseConflictingDocumentsByName(Path.GetFileName(productPath), normalizedProductPath);
+
+                try
+                {
+                    productDoc = (ProductDocument)catiaApp.Documents.Open(productPath);
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception($"Failed to open assembly: {ex.Message}");
+                }
+
+                if (productDoc == null)
+                    throw new Exception("ProductDocument returned null after opening.");
+
+                // -------------------------------------------------------------
+                // 3-  Walk the tree and relink every matching component.
+                // -------------------------------------------------------------
+                var rootProduct = productDoc.Product;
+                var alreadyReplaced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var outcome = new ProductReplaceOutcome();
+
+                ReplaceReferencesInProduct(
+                    rootProduct, renameMap, alreadyReplaced, convertedItems, documentsToClose, outcome);
+
+                // Nothing to relink is SUCCESS, not failure: the assembly may
+                // already point at the new files (re-run) or simply contain no
+                // component covered by the rename map.
+                if (outcome.Replaced == 0)
+                {
+                    if (outcome.Failed > 0)
+                    {
+                        throw new Exception(
+                            $"{outcome.Failed} component reference(s) of this assembly could not be " +
+                            "relinked to the new files.");
+                    }
+
+                    ConsoleWriteLine(
+                        outcome.AlreadyUpToDate > 0
+                            ? $"  Nothing to do - {outcome.AlreadyUpToDate} component(s) already point at the new files."
+                            : "  Nothing to do - no component of this assembly matches the rename map.");
+                }
+                else
+                {
+                    // ---------------------------------------------------------
+                    // 4-  Persist. CATIA can report a successful Save without
+                    //     writing anything, so the file system is the judge.
+                    // ---------------------------------------------------------
+                    DateTime writeTimeBefore = GetLastWriteTimeSafe(productPath);
+                    ExecuteComActionWithRetry(() => ComSave(productDoc), "save assembly", 3, 400);
+
+                    if (GetLastWriteTimeSafe(productPath) <= writeTimeBefore)
+                    {
+                        ReportSaveAsCapability();
+                        throw new Exception(
+                            $"Save reported success but '{productPath}' did not change on disk - " +
+                            "the new references were NOT persisted.");
+                    }
+
+                    ConsoleWriteLine(
+                        $"Assembly saved successfully ({outcome.Replaced} component reference(s) relinked" +
+                        (outcome.Failed > 0 ? $", {outcome.Failed} failed" : "") + ").");
+                }
             }
             catch (Exception ex)
             {
-                throw new Exception($"Failed to open assembly: {ex.Message}");
-            }
-
-            if (productDoc == null)
-                throw new Exception("ProductDocument returned null after opening.");
-
-            var rootProduct = productDoc.Product;
-            var alreadyReplaced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            ReplaceReferencesInProduct(rootProduct, renameMap, alreadyReplaced, convertedItems);
-
-            // Save & close -------------------------------------------------
-            try
-            {
-                productDoc.Save();
-                ConsoleWriteLine("Assembly saved successfully.");
+                ConsoleWriteLine($"  ERROR while processing assembly '{productPath}': {ex.Message}");
+                throw;
             }
             finally
             {
-                productDoc.Close();
-                CloseAllDocumentsExcept(productPath);
+                ReleaseComObject(productDoc);
+                productDoc = null;
+
+                // Close the ASSEMBLY FIRST - CATIA refuses to close a part that
+                // is still referenced by an open product.
+                CloseDocumentByFullPath(productPath, "assembly");
+
+                foreach (string path in documentsToClose.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    if (string.Equals(path, normalizedProductPath, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    CloseDocumentByFullPath(path, "component document");
+                }
+                documentsToClose.Clear();
+
+                foreach (string path in stagedFiles.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    CloseDocumentByFullPath(path, "staged component");
+                }
+
+                // Remove the staged copies and restore any real file we moved.
+                DeletePlaceholders(stagedFiles);
+                RestoreMovedOriginals(movedOriginals);
             }
 
             // The file we just processed must be fed back to the caller so
@@ -306,99 +428,356 @@ namespace CatiaReferenceRename.WPFUI.Lib
         }
 
         /// <summary>
-        /// Recursively walks a Product tree and replaces every child component
-        /// whose file name matches a key in <paramref name="renameMap"/>.
+        /// Copies a replacement file under its ORIGINAL name into the assembly's
+        /// folder so CATIA can resolve the component while opening the product.
+        /// A real file already sitting there is moved aside and restored later.
+        /// </summary>
+        private static void StageProductComponent(
+            string productPath,
+            string mapKey,
+            string newPath,
+            List<string> stagedFiles,
+            Dictionary<string, string> movedOriginals)
+        {
+            if (!System.IO.File.Exists(newPath))
+            {
+                ConsoleWriteLine($"    ERROR: new file not found - cannot fix '{GetFileNameSafe(mapKey)}': {newPath}");
+                return;
+            }
+
+            string fileName = GetFileNameSafe(mapKey);
+            if (string.IsNullOrWhiteSpace(fileName)) return;
+
+            string directory = GetDirectoryNameSafe(productPath);
+            if (string.IsNullOrEmpty(directory)) return;
+
+            string location;
+            try { location = Path.Combine(directory, fileName); }
+            catch { return; }
+
+            // Never stage on top of the replacement file itself.
+            if (string.Equals(NormalizePath(location), NormalizePath(newPath), StringComparison.OrdinalIgnoreCase))
+                return;
+
+            try
+            {
+                if (System.IO.File.Exists(location))
+                {
+                    string backupPath = location + ".relink_orig";
+                    try
+                    {
+                        ClearReadOnly(location);
+                        if (System.IO.File.Exists(backupPath))
+                            System.IO.File.Delete(backupPath);
+                        System.IO.File.Move(location, backupPath);
+                        movedOriginals[backupPath] = location;
+                        ConsoleWriteLine($"  Existing file moved aside (restored later): {location}");
+                    }
+                    catch (Exception ex)
+                    {
+                        ConsoleWriteLine($"    Could not move the existing file aside ({ex.Message}) - skipping: {location}");
+                        return;
+                    }
+                }
+
+                System.IO.File.Copy(newPath, location, overwrite: true);
+                ClearReadOnly(location);
+                stagedFiles.Add(location);
+                ConsoleWriteLine($"  Staged replacement under its original name: {location}");
+            }
+            catch (Exception ex)
+            {
+                ConsoleWriteLine($"    ERROR: could not stage '{location}': {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Recursively walks a Product tree and relinks every child component
+        /// whose underlying FILE matches an entry of <paramref name="renameMap"/>.
+        /// Returns the number of components that were verifiably relinked.
+        ///
+        /// Matching is done on `ReferenceProduct.Parent.FullName` (the component's
+        /// real file), NOT on `Name`/`PartNumber`: those are the instance name and
+        /// an internal id and are unrelated to the file name.
         /// </summary>
         private static void ReplaceReferencesInProduct(
             Product currentProduct,
             Dictionary<string, string> renameMap,
-            HashSet<string> replacedPartNumbers,
-            List<string> convertedItems)
+            HashSet<string> replacedPaths,
+            List<string> convertedItems,
+            List<string> documentsToClose,
+            ProductReplaceOutcome outcome)
         {
-            Products childProducts = currentProduct.Products;
+            Products childProducts = null;
+            try { childProducts = currentProduct.Products; }
+            catch (Exception ex)
+            {
+                ConsoleWriteLine($"    Could not read the child components: {ex.Message}");
+                return;
+            }
             if (childProducts == null) return;
 
+            int count;
+            try { count = childProducts.Count; }
+            catch (Exception ex)
+            {
+                ConsoleWriteLine($"    Could not count the child components: {ex.Message}");
+                return;
+            }
+
             // -------------------------------------------------------------
-            // 1️⃣  Build two temporary lists – we never modify the COM
-            //     collection while we iterate it.
+            // 1-  Read phase: never modify the COM collection while iterating.
+            //     Collect (index, currentFile, newPath) for the matches and the
+            //     sub-assemblies to recurse into.
             // -------------------------------------------------------------
-            var toReplace = new List<Product>();
+            var toReplace = new List<ProductComponentFix>();
             var toRecurse = new List<Product>();
 
-            int count = childProducts.Count;
+            var knownNewPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string value in renameMap.Values)
+            {
+                knownNewPaths.Add(NormalizePath(value));
+            }
+
             for (int i = 1; i <= count; i++)
             {
                 try
                 {
-                    dynamic child = childProducts.Item(i);
-                    string partNumber = child.Name;
-                    if (string.IsNullOrWhiteSpace(partNumber)) continue;
+                    object child = childProducts.Item(i);
+                    string instanceName = GetComStringPropertySafe(child, "Name");
+                    string currentFile = GetComponentFilePath(child);
 
-                    // Strip the trailing “.n” that CATIA adds for duplicated
-                    // instances (e.g. Part1.1, Part1.2, …)
-                    partNumber = StripInstanceSuffix(partNumber);
-
-                    // Is there a mapping for this part?
-                    string oldKey = FindMatchingKeyInMap(partNumber, renameMap);
-                    if (oldKey != null && !replacedPartNumbers.Contains(partNumber))
+                    if (string.IsNullOrEmpty(currentFile))
                     {
-                        toReplace.Add(child);
+                        // Unresolved component: the referenced file is missing, so
+                        // CATIA cannot tell us which file it wants. Staging in
+                        // ProcessProduct is what prevents this.
+                        ConsoleWriteLine(
+                            $"    Component \"{instanceName}\" is unresolved (its file is missing) - skipped.");
+                        outcome.Unresolved++;
+                        continue;
                     }
-                    else
-                    {
-                        // Might be a sub‑assembly – check if it itself contains children
-                        bool hasChildren = false;
-                        try { hasChildren = child.Products != null && child.Products.Count > 0; }
-                        catch { /* ignore */ }
 
-                        if (hasChildren) toRecurse.Add(child);
+                    // The component may already point at one of the NEW files
+                    // (e.g. this assembly was processed before). That is
+                    // "nothing to do", not "no match" - the rename map is keyed
+                    // by the OLD name, so it would otherwise look unmatched.
+                    if (knownNewPaths.Contains(NormalizePath(currentFile)))
+                    {
+                        ConsoleWriteLine(
+                            $"  Component \"{instanceName}\" already points at the new file - skipped.");
+                        outcome.AlreadyUpToDate++;
+                        continue;
                     }
+
+                    string matchingKey = FindMatchingKeyForFile(currentFile, renameMap);
+                    if (matchingKey != null)
+                    {
+                        string newPath = renameMap[matchingKey];
+
+                        if (string.Equals(NormalizePath(currentFile), NormalizePath(newPath),
+                                StringComparison.OrdinalIgnoreCase))
+                        {
+                            ConsoleWriteLine($"  Component \"{instanceName}\" is already up-to-date.");
+                            outcome.AlreadyUpToDate++;
+                            continue;
+                        }
+
+                        if (replacedPaths.Contains(NormalizePath(currentFile)))
+                        {
+                            // ReplaceComponent(..., true) already propagated to
+                            // every other instance of the same component.
+                            continue;
+                        }
+
+                        toReplace.Add(new ProductComponentFix
+                        {
+                            Index = i,
+                            InstanceName = instanceName,
+                            CurrentFile = currentFile,
+                            MapKey = matchingKey,
+                            NewPath = GetExistingPathWithRealCase(newPath)
+                        });
+                        continue;
+                    }
+
+                    // Not a match - it may be a sub-assembly worth recursing into.
+                    bool hasChildren = false;
+                    try
+                    {
+                        object grandChildren = GetComProperty(child, "Products");
+                        hasChildren = grandChildren != null && GetComCount(grandChildren) > 0;
+                    }
+                    catch { /* not a sub-assembly */ }
+
+                    if (hasChildren && child is Product)
+                        toRecurse.Add((Product)child);
                 }
                 catch (COMException) { /* ignore transient COM issues */ }
+                catch (Exception ex)
+                {
+                    ConsoleWriteLine($"    Unexpected issue on component {i}: {ex.Message}");
+                }
             }
 
             // -------------------------------------------------------------
-            // 2️⃣  Perform the actual replacements
+            // 2-  Perform the replacements and VERIFY each one by reading the
+            //     component's file back.
             // -------------------------------------------------------------
-            foreach (dynamic child in toReplace)
+            foreach (ProductComponentFix fix in toReplace)
             {
                 try
                 {
-                    string partNumber = StripInstanceSuffix(child.Name);
-                    string oldKey = FindMatchingKeyInMap(partNumber, renameMap);
-                    if (oldKey == null) continue;               // should not happen
+                    ConsoleWriteLine($"  Relinking component \"{fix.InstanceName}\":");
+                    ConsoleWriteLine($"    Old Path: {fix.CurrentFile}");
+                    ConsoleWriteLine($"    New Path: {fix.NewPath}");
 
-                    string newPath = renameMap[oldKey];
-                    ConsoleWriteLine($"  Replacing component: {partNumber}");
-                    ConsoleWriteLine($"    Old Path: {oldKey}");
-                    ConsoleWriteLine($"    New Path: {newPath}");
+                    object child = childProducts.Item(fix.Index);
 
                     // true => propagate to every other instance of this component
-                    childProducts.ReplaceComponent(child, newPath, true);
+                    InvokeComMethod(childProducts, "ReplaceComponent", child, fix.NewPath, true);
 
-                    replacedPartNumbers.Add(partNumber);
-                    convertedItems.Add(oldKey);
+                    // VERIFY: re-read the component's file.
+                    string afterFile = GetComponentFilePath(childProducts.Item(fix.Index));
+                    bool ok = !string.IsNullOrEmpty(afterFile) &&
+                              string.Equals(NormalizePath(afterFile), NormalizePath(fix.NewPath),
+                                  StringComparison.OrdinalIgnoreCase);
+
+                    if (ok)
+                    {
+                        ConsoleWriteLine("    Relinked successfully.");
+                        replacedPaths.Add(NormalizePath(fix.CurrentFile));
+                        if (!convertedItems.Contains(fix.MapKey))
+                            convertedItems.Add(fix.MapKey);
+                        if (documentsToClose != null)
+                        {
+                            documentsToClose.Add(NormalizePath(fix.CurrentFile));
+                            documentsToClose.Add(NormalizePath(fix.NewPath));
+                        }
+                        outcome.Replaced++;
+                    }
+                    else
+                    {
+                        ConsoleWriteLine(
+                            "    FAILED - the component still points to " +
+                            $"'{(string.IsNullOrEmpty(afterFile) ? "<unreadable>" : afterFile)}'.");
+                        outcome.Failed++;
+                    }
                 }
                 catch (Exception ex)
                 {
-                    ConsoleWriteLine($"    Failed to replace reference: {ex.Message}");
+                    var inner = (ex as TargetInvocationException)?.InnerException ?? ex;
+                    ConsoleWriteLine($"    Failed to relink the component: {inner.Message}");
+                    outcome.Failed++;
                 }
             }
 
             // -------------------------------------------------------------
-            // 3️⃣  Recurse into sub‑assemblies
+            // 3-  Recurse into sub-assemblies
             // -------------------------------------------------------------
             foreach (Product sub in toRecurse)
             {
                 try
                 {
-                    // Guard against a sub‑assembly that has just been replaced
+                    // Guard against a sub-assembly that has just been replaced
                     // (its COM proxy would throw).
-                    string _ = sub.get_Name(); // will throw if the object is dead
-                    ReplaceReferencesInProduct(sub, renameMap, replacedPartNumbers, convertedItems);
+                    string _ = sub.get_Name();
+                    ReplaceReferencesInProduct(
+                        sub, renameMap, replacedPaths, convertedItems, documentsToClose, outcome);
                 }
                 catch (COMException) { /* ignore dead objects */ }
             }
+        }
+
+        /// <summary>
+        /// Tally of what happened while walking a product tree, so the caller can
+        /// tell "nothing needed doing" (success) from "attempts failed" (error).
+        /// </summary>
+        private class ProductReplaceOutcome
+        {
+            public int Replaced;
+            public int Failed;
+            public int AlreadyUpToDate;
+            public int Unresolved;
+        }
+
+        /// <summary>
+        /// One pending component relink.
+        /// </summary>
+        private class ProductComponentFix
+        {
+            public int Index;
+            public string InstanceName;
+            public string CurrentFile;
+            public string MapKey;
+            public string NewPath;
+        }
+
+        /// <summary>
+        /// Returns the full path of the file a component is built from, or an
+        /// empty string when the component is unresolved.
+        ///
+        /// `child.ReferenceProduct` throws "The method ReferenceProduct failed"
+        /// for an unresolved component (its file is missing from disk), which is
+        /// exactly how an unresolved component is detected.
+        /// </summary>
+        private static string GetComponentFilePath(object child)
+        {
+            try
+            {
+                object referenceProduct = GetComProperty(child, "ReferenceProduct");
+                if (referenceProduct == null) return string.Empty;
+
+                string fullName = GetFullNameFromObject(referenceProduct);
+                if (!string.IsNullOrWhiteSpace(fullName))
+                    return fullName;
+            }
+            catch
+            {
+                // unresolved component / not a part instance
+            }
+            return string.Empty;
+        }
+
+        /// <summary>
+        /// Finds the rename-map entry that describes <paramref name="currentFile"/>.
+        /// Comparison is by full path first, then by file name (the map key may be
+        /// a bare file name such as "F20427V1.CATPart"), then by base name.
+        /// </summary>
+        private static string FindMatchingKeyForFile(
+            string currentFile,
+            Dictionary<string, string> renameMap)
+        {
+            if (string.IsNullOrWhiteSpace(currentFile)) return null;
+
+            string normalizedFile = NormalizePath(currentFile);
+            string fileName = GetFileNameSafe(currentFile);
+            string baseName = Path.GetFileNameWithoutExtension(fileName);
+
+            // 1) exact full-path match
+            foreach (string key in renameMap.Keys)
+            {
+                if (string.Equals(NormalizePath(key), normalizedFile, StringComparison.OrdinalIgnoreCase))
+                    return key;
+            }
+
+            // 2) file name match (with extension)
+            foreach (string key in renameMap.Keys)
+            {
+                if (string.Equals(GetFileNameSafe(key), fileName, StringComparison.OrdinalIgnoreCase))
+                    return key;
+            }
+
+            // 3) base name match (ignores a differing extension casing/suffix)
+            foreach (string key in renameMap.Keys)
+            {
+                string keyBase = Path.GetFileNameWithoutExtension(GetFileNameSafe(key));
+                if (!string.IsNullOrEmpty(keyBase) &&
+                    string.Equals(keyBase, baseName, StringComparison.OrdinalIgnoreCase))
+                    return key;
+            }
+
+            return null;
         }
 
         #endregion ------------------------------------------------------------
