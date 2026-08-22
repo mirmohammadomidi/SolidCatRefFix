@@ -43,7 +43,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
             }
         }
 
-        public async Task StartFixing(SoftwareType softwareType, List<string> fileNamesToInclude = null, string patternToMatchAllFolderAddressWith = null, string replaceAllFolderAddressWith = null)
+        public async Task StartFixing(SoftwareType softwareType, List<string> fileNamesToInclude = null, string patternToMatchAllFolderAddressWith = null, string replaceAllFolderAddressWith = null, FileExtensionTypes extensionTypes = FileExtensionTypes.All, string site = "All Sites")
         {
             //if (!string.IsNullOrWhiteSpace(convertAllDestinationFilesToFolder))
             //{
@@ -53,6 +53,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
             //        convertAllDestinationFilesToFolder += Path.DirectorySeparatorChar.ToString();
             //    }
             //}
+            bool allSites = site.ToLower().Contains("all");
             Errors.Clear();
             using (var context = new IFSCodeCleansingDBContext(App.DefaultConnectionString))
             {
@@ -61,13 +62,32 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                     await Task.Run(async () =>
                     {
                         List<DocFileView> allAssemblies;
-                        if (softwareType == SoftwareType.Solid)
+                        if ((extensionTypes & FileExtensionTypes.Assembly) == FileExtensionTypes.Assembly && softwareType == SoftwareType.Solid)
                         {
-                            allAssemblies = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "SLDASM").ToListAsync();
+                            if (allSites)
+                            {
+                                allAssemblies = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "SLDASM").ToListAsync();
+                            }
+                            else
+                            {
+                                allAssemblies = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "SLDASM" && uu.SourceDbCode.ToUpper().Contains(site.ToUpper())).ToListAsync();
+                            }
+
+                        }
+                        else if ((extensionTypes & FileExtensionTypes.Assembly) == FileExtensionTypes.Assembly && softwareType == SoftwareType.Catia)
+                        {
+                            if (allSites)
+                            {
+                                allAssemblies = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATPRODUCT").ToListAsync();
+                            }
+                            else
+                            {
+                                allAssemblies = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATPRODUCT" && uu.SourceDbCode.ToUpper().Contains(site.ToUpper())).ToListAsync();
+                            }
                         }
                         else
                         {
-                            allAssemblies = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATPRODUCT").ToListAsync();
+                            allAssemblies = new List<DocFileView>();
                         }
                         if (fileNamesToInclude != null && fileNamesToInclude.Any())
                         {
@@ -84,24 +104,47 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
 
                         var partDict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                         List<DocFileView> allParts;
-                        if (softwareType == SoftwareType.Solid)
+                        if ((extensionTypes & FileExtensionTypes.Part) == FileExtensionTypes.Part && softwareType == SoftwareType.Solid)
                         {
-                            allParts = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "SLDPRT" || uu.EXTENSION.ToUpper() == "SLDASM").ToListAsync();
+                            allParts = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "SLDPRT" || ((extensionTypes & FileExtensionTypes.Assembly) == FileExtensionTypes.Assembly && uu.EXTENSION.ToUpper() == "SLDASM")).ToListAsync();
+                        }
+                        else if ((extensionTypes & FileExtensionTypes.Part) == FileExtensionTypes.Part && softwareType == SoftwareType.Catia)
+                        {
+                            allParts = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATPART" || ((extensionTypes & FileExtensionTypes.Assembly) == FileExtensionTypes.Assembly && uu.EXTENSION.ToUpper() == "CATPRODUCT")).ToListAsync();
                         }
                         else
                         {
-                            allParts = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATPART" || uu.EXTENSION.ToUpper() == "CATPRODUCT").ToListAsync();
+                            allParts = new List<DocFileView>();
                         }
                         if (OnNumberOfPartsChanged != null)
                             OnNumberOfPartsChanged(this, allParts.Count);
                         List<DocFileView> allDrawings;
-                        if (softwareType == SoftwareType.Solid)
+                        if ((extensionTypes & FileExtensionTypes.Drawing) == FileExtensionTypes.Drawing && softwareType == SoftwareType.Solid)
                         {
-                            allDrawings = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "SLDDRW").ToListAsync();
+                            if (allSites)
+                            {
+                                allDrawings = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "SLDDRW").ToListAsync();
+                            }
+                            else
+                            {
+                                allDrawings = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "SLDDRW" && uu.SourceDbCode.ToUpper().Contains(site.ToUpper())).ToListAsync();
+                            }
+                        }
+                        else if ((extensionTypes & FileExtensionTypes.Drawing) == FileExtensionTypes.Drawing && softwareType == SoftwareType.Catia)
+                        {
+                            if (allSites)
+                            {
+                                allDrawings = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATDRAWING").ToListAsync();
+                            }
+                            else
+                            {
+                                allDrawings = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATDRAWING" && uu.SourceDbCode.ToUpper().Contains(site.ToUpper())).ToListAsync();
+                            }   
+                            
                         }
                         else
                         {
-                            allDrawings = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATDRAWING").ToListAsync();
+                            allDrawings = new List<DocFileView>();
                         }
                         if (fileNamesToInclude != null && fileNamesToInclude.Any())
                         {
@@ -170,7 +213,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                         else
                         {
                             assemblyList = allAssemblies.Select(uu => uu.DestinationFileAddress.Replace(patternToMatchAllFolderAddressWith, replaceAllFolderAddressWith)).ToList();
-                            var v2 = assemblyList = allAssemblies.Select(uu => uu.DestinationFileAddress.Replace(patternToMatchAllFolderAddressWith, replaceAllFolderAddressWith)).ToList();
+                            var v2 =  allDrawings.Select(uu => uu.DestinationFileAddress.Replace(patternToMatchAllFolderAddressWith, replaceAllFolderAddressWith)).ToList();
                             assemblyList.AddRange(v2);
                         }
 
@@ -198,10 +241,10 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                             }
                             Console.WriteLine($"\nProcessing assembly: {currentAssemblyPath}");
                             processedAssemblies.Add(currentAssemblyPath);
-                            PartChangingOutput g=null;
+                            PartChangingOutput g = null;
                             if (softwareType == SoftwareType.Solid)
                             {
-                               // g = SolidUtils.ChangePartAddress(currentAssemblyPath, partDict);
+                                // g = SolidUtils.ChangePartAddress(currentAssemblyPath, partDict);
                             }
                             else
                             {

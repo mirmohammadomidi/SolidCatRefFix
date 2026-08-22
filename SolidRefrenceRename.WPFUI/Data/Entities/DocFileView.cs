@@ -42,6 +42,7 @@ namespace SolidRefrenceRename.WPFUI.Data.Entities
         public int PROJNO { get; set; }
         public string noPath { get; set; }
         public string PathType { get; set; }
+
         public string SourceFolderAddress { get; set; }
         public string SourceFileName { get; set; }
         public string ExtensionClassCode { get; set; }
@@ -52,6 +53,8 @@ namespace SolidRefrenceRename.WPFUI.Data.Entities
         public DateTime? AssortmentRevisionDate { get; set; }
         public string FileTypeInIFS { get; set; }
         public int SheetNumber { get; set; }
+
+        public string SourceDbCode { get; set; }
 
     }
 }

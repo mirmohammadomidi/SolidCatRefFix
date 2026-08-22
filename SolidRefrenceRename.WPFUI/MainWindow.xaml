@@ -51,14 +51,26 @@
             <StackPanel Orientation="Horizontal">
                 <Button 
                  IsEnabled="{Binding IsRunning, Converter={StaticResource InverseBoolConverter}}" Height="30"
-                Padding="3" Margin="10 0 0 0" Content="Start Fixing Solidwork Files" Click="Button_FixSolid_Click"/>
-                <Button 
-                
-                     IsEnabled="{Binding IsRunning, Converter={StaticResource InverseBoolConverter}}" Height="30"
-                    Padding="3" Margin="10 0 0 0" Content="Start Fixing CATIA Files" Click="Button_FixCATIA_Click"/>
+                Padding="3" Margin="10 0 0 0" Content="Start Fixing Files" Click="Button_StartFixing_Click"/>
+                <ComboBox x:Name="cmbSoftwareType" Width="100" Height="30" Margin="10 0 0 0" SelectedIndex="0">
+                    <ComboBoxItem Content="SolidWorks" Tag="{x:Static local1:SoftwareType.Solid}"/>
+                    <ComboBoxItem Content="CATIA" Tag="{x:Static local1:SoftwareType.Catia}"/>
+                </ComboBox>
+                <ComboBox x:Name="cmbExtensionType" Width="110" Height="30" Margin="10 0 0 0" SelectedIndex="0">
+                    <ComboBoxItem Content="All extensions" Tag="{x:Static local1:FileExtensionTypes.All}"/>
+                    <ComboBoxItem Content="Assemblies" Tag="{x:Static local1:FileExtensionTypes.Assembly}"/>
+                    <ComboBoxItem Content="Parts" Tag="{x:Static local1:FileExtensionTypes.Part}"/>
+                    <ComboBoxItem Content="Drawings" Tag="{x:Static local1:FileExtensionTypes.Drawing}"/>
+                </ComboBox>
+                <ComboBox x:Name="cmbSites" Width="110" Height="30"  Margin="10 0 0 0" SelectedIndex="0" IsEditable="True">
+                    <ComboBoxItem Content="All Sites" />
+                    <ComboBoxItem Content="A"/>
+                    <ComboBoxItem Content="B" />
+                    <ComboBoxItem Content="M" />
+                </ComboBox>
                 <Button                
-              IsEnabled="{Binding IsRunning, Converter={StaticResource InverseBoolConverter}}" Height="30"
-             Padding="3" Margin="10 0 0 0" Content="Start Fixing CATIA Test Files" Click="Button_Test_Click"/>
+                    IsEnabled="{Binding IsRunning, Converter={StaticResource InverseBoolConverter}}" Height="30"
+                    Padding="3" Margin="10 0 0 0" Content="Start Fixing CATIA Test Files" Click="Button_Test_Click"/>
             </StackPanel>
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Height="120">
                 <TextBlock  Text="Target File Address: " VerticalAlignment="Center"/>

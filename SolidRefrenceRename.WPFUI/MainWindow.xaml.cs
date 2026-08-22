@@ -1,4 +1,5 @@
 ﻿using SolidRefrenceRename.WPFUI.ViewModel;
+using SolidRefrenceRename.WPFUI.Lib;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -81,7 +82,7 @@ namespace SolidRefrenceRename.WPFUI
             });
         }
 
-        private async void Button_FixSolid_Click(object sender, RoutedEventArgs e)
+        private async void Button_StartFixing_Click(object sender, RoutedEventArgs e)
         {
             try
             {
@@ -103,37 +104,10 @@ namespace SolidRefrenceRename.WPFUI
                 {
                     fileNamesToInclude = txbJustInclude.Text.Split(',').ToList();
                 }
-                await ViewModel.StartFixing(Lib.SoftwareType.Solid, fileNamesToInclude, basePattern, patternReplace);
-            }
-            finally
-            {
-                ViewModel.IsRunning = false;         // re‑enable the button
-                lblCurrent.Content = "All done";
-            }
-        }
-
-        private async void Button_FixCATIA_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                txbLog.Text = string.Empty;
-                ViewModel.IsRunning = true;
-                string basePattern = null;
-                string patternReplace = null;
-                List<string> fileNamesToInclude = null;
-                if (!string.IsNullOrWhiteSpace(txbBasePattern.Text))
-                {
-                    basePattern = txbBasePattern.Text;
-                }
-                if (!string.IsNullOrWhiteSpace(txbReplace.Text))
-                {
-                    patternReplace = txbReplace.Text;
-                }
-                if (!string.IsNullOrWhiteSpace(txbJustInclude.Text))
-                {
-                    fileNamesToInclude = txbJustInclude.Text.Split(',').ToList();
-                }
-                await ViewModel.StartFixing(Lib.SoftwareType.Catia, fileNamesToInclude, basePattern, patternReplace);
+                var softwareType = (SoftwareType)((ComboBoxItem)cmbSoftwareType.SelectedItem).Tag;
+                var extensionTypes = (FileExtensionTypes)((ComboBoxItem)cmbExtensionType.SelectedItem).Tag;
+                var site = ((ComboBoxItem)cmbSites.SelectedItem)?.Content?.ToString() ?? "All Sites";
+                await ViewModel.StartFixing(softwareType, fileNamesToInclude, basePattern, patternReplace, extensionTypes, site);
             }
             finally
             {
@@ -171,6 +145,36 @@ namespace SolidRefrenceRename.WPFUI
                 MessageBox.Show("Dictionary contains: " + fileNamesToInclude.Count + " new addresses");
 
                 await ViewModel.CatiaTest(targetFile, fileNamesToInclude);
+            }
+            finally
+            {
+                ViewModel.IsRunning = false;         // re‑enable the button
+            }
+        }
+
+        private async void Button_FixCATIADrawing_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                txbLog.Text = string.Empty;
+                ViewModel.IsRunning = true;
+                string basePattern = null;
+                string patternReplace = null;
+                List<string> fileNamesToInclude = null;
+                if (!string.IsNullOrWhiteSpace(txbBasePattern.Text))
+                {
+                    basePattern = txbBasePattern.Text;
+                }
+                if (!string.IsNullOrWhiteSpace(txbReplace.Text))
+                {
+                    patternReplace = txbReplace.Text;
+                }
+                if (!string.IsNullOrWhiteSpace(txbJustInclude.Text))
+                {
+                    fileNamesToInclude = txbJustInclude.Text.Split(',').ToList();
+                }
+                var site = ((ComboBoxItem)cmbSites.SelectedItem)?.Content?.ToString() ?? "All Sites";
+                await ViewModel.StartFixing(Lib.SoftwareType.Catia, fileNamesToInclude, basePattern, patternReplace,Lib.FileExtensionTypes.Drawing, site);
             }
             finally
             {
