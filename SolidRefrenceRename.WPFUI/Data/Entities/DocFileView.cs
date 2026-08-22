@@ -56,5 +56,20 @@ namespace SolidRefrenceRename.WPFUI.Data.Entities
 
         public string SourceDbCode { get; set; }
 
+        /// <summary>
+        /// CATIA component UUID (e.g. "DR01AAA01"), pre-extracted from the file
+        /// bytes so that relevance matching does not have to read every part
+        /// file.  NULL for non-CATIA files or parts that carry no UUID.
+        /// Populated by <see cref="Lib.CatiaUtils.BackfillCatiaIdentities"/>.
+        /// </summary>
+        public string UUID { get; set; }
+
+        /// <summary>
+        /// CATIA part definition / part number (e.g. "F20435V1"), pre-extracted
+        /// from the file bytes.  Used for drawing relevance matching.  NULL for
+        /// non-CATIA files or parts that carry no definition.
+        /// </summary>
+        public string CatiaPartDefinition { get; set; }
+
     }
 }

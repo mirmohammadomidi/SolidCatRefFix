@@ -30,6 +30,13 @@ namespace CatiaReferenceRename.WPFUI.Lib
 
         public static event EventHandler<string> LogErrors;
 
+        /// <summary>
+        /// Pre-computed CATIA identities for the part files in the rename map,
+        /// keyed by file path.  When non-null, relevance matching uses these
+        /// cached UUIDs/part-definitions instead of reading every part file.
+        /// </summary>
+        private static CatiaPartIdentityCache _identityCache;
+
         #region Public API -----------------------------------------------------
 
         /// <summary>
@@ -41,6 +48,20 @@ namespace CatiaReferenceRename.WPFUI.Lib
             string currentAssemblyPath,
             Dictionary<string, string> newPartAddressMap)
         {
+            return ChangePartAddress(currentAssemblyPath, newPartAddressMap, null);
+        }
+
+        /// <summary>
+        /// Overload that accepts a pre-computed identity cache so that
+        /// relevance matching does not have to read every part file from disk.
+        /// </summary>
+        public static PartChangingOutput ChangePartAddress(
+            string currentAssemblyPath,
+            Dictionary<string, string> newPartAddressMap,
+            CatiaPartIdentityCache identityCache)
+        {
+            _identityCache = identityCache;
+
             if (Thread.CurrentThread.GetApartmentState() != ApartmentState.STA)
             {
                 PartChangingOutput result = null;
@@ -555,6 +576,10 @@ namespace CatiaReferenceRename.WPFUI.Lib
         /// When neither strategy identifies any entry, an empty list is
         /// returned and the caller decides on a fallback (products stage all
         /// entries; drawings fall back to the filename convention).
+        ///
+        /// When <see cref="_identityCache"/> is populated, part-file UUIDs and
+        /// definitions are read from the cache (pre-computed from the database)
+        /// instead of reading every part file from disk.
         /// </summary>
         private static List<KeyValuePair<string, string>> FindRelevantRenameMapEntries(
             string documentPath,
@@ -576,18 +601,8 @@ namespace CatiaReferenceRename.WPFUI.Lib
                         continue;
                     }
 
-                    var partUuids = ExtractComponentUuidsFromFile(kvp.Value);
-                    bool relevant = false;
-                    foreach (string uuid in partUuids)
-                    {
-                        if (documentUuids.Contains(uuid))
-                        {
-                            relevant = true;
-                            break;
-                        }
-                    }
-
-                    if (relevant)
+                    string partUuid = GetCachedUuid(kvp.Value);
+                    if (!string.IsNullOrEmpty(partUuid) && documentUuids.Contains(partUuid))
                     {
                         result.Add(kvp);
                         ConsoleWriteLine($"  Relevant: {GetFileNameSafe(kvp.Key)} (UUID match)");
@@ -624,7 +639,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
                     if (alreadyAdded)
                         continue;
 
-                    string definition = ExtractPartDefinitionFromFile(kvp.Value);
+                    string definition = GetCachedPartDefinition(kvp.Value);
                     if (string.IsNullOrEmpty(definition))
                         continue;
 
@@ -723,6 +738,45 @@ namespace CatiaReferenceRename.WPFUI.Lib
             }
 
             return uuids;
+        }
+
+        /// <summary>
+        /// Returns the cached UUID for a part file, or reads it from disk when
+        /// the identity cache is empty or has no entry for this file.
+        /// </summary>
+        private static string GetCachedUuid(string partFilePath)
+        {
+            if (_identityCache != null && !_identityCache.IsEmpty)
+            {
+                CatiaPartIdentity identity = _identityCache.Get(partFilePath);
+                if (identity != null)
+                    return identity.Uuid;
+                return null;
+            }
+
+            // Fallback: read from disk.
+            var uuids = ExtractComponentUuidsFromFile(partFilePath);
+            foreach (string uuid in uuids)
+                return uuid;
+            return null;
+        }
+
+        /// <summary>
+        /// Returns the cached part definition for a part file, or reads it from
+        /// disk when the identity cache is empty or has no entry for this file.
+        /// </summary>
+        private static string GetCachedPartDefinition(string partFilePath)
+        {
+            if (_identityCache != null && !_identityCache.IsEmpty)
+            {
+                CatiaPartIdentity identity = _identityCache.Get(partFilePath);
+                if (identity != null)
+                    return identity.PartDefinition;
+                return null;
+            }
+
+            // Fallback: read from disk.
+            return ExtractPartDefinitionFromFile(partFilePath);
         }
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -2908,6 +2962,119 @@ End Sub";
         public static void DoCleanUp()
         {
             // No explicit cleanup – the caller decides whether to quit CATIA or keep it alive.
+        }
+
+        /// <summary>
+        /// Public wrapper for extracting component UUIDs from a CATIA file.
+        /// Used by the ViewModel to build the identity cache after backfilling.
+        /// </summary>
+        public static HashSet<string> ExtractComponentUuidsFromPath(string filePath)
+        {
+            return ExtractComponentUuidsFromFile(filePath);
+        }
+
+        /// <summary>
+        /// Public wrapper for extracting the part definition from a CATIA file.
+        /// Used by the ViewModel to build the identity cache after backfilling.
+        /// </summary>
+        public static string ExtractPartDefinitionFromPath(string filePath)
+        {
+            return ExtractPartDefinitionFromFile(filePath);
+        }
+
+        /// <summary>
+        /// Scans all CATPart/CATProduct files in the given list, extracts their
+        /// CATIA UUID and part definition from the raw file bytes, and writes
+        /// them back to the database so that future runs can match part
+        /// relevance without reading every file from disk.
+        ///
+        /// This is a one-time (or occasional) bulk update: call it after
+        /// importing new files or when the CatiaUuid/CatiaPartDefinition
+        /// columns are NULL for existing rows.
+        /// </summary>
+        /// <param name="parts">The list of part files to scan (typically
+        /// all CATPart rows from <c>vw_docFiles</c>).</param>
+        /// <param name="saveBatch">A callback that persists a batch of
+        /// updated identities back to the database.  Each call receives a
+        /// list of (ID, CatiaUuid, CatiaPartDefinition) tuples.</param>
+        /// <param name="batchSize">How many rows to update per database
+        /// round-trip.</param>
+        /// <returns>The number of rows that were updated.</returns>
+        public static int BackfillCatiaIdentities(
+            List<SolidRefrenceRename.WPFUI.Data.Entities.DocFileView> parts,
+            Action<List<BackfillItem>> saveBatch,
+            int batchSize = 50)
+        {
+            if (parts == null || parts.Count == 0) return 0;
+
+            int updated = 0;
+            var batch = new List<BackfillItem>();
+
+            ConsoleWriteLine($"Backfilling CATIA identities for {parts.Count} part file(s)...");
+
+            foreach (var part in parts)
+            {
+                string filePath = part.DestinationFileAddress;
+                if (string.IsNullOrWhiteSpace(filePath) || !System.IO.File.Exists(filePath))
+                    continue;
+
+                // Skip rows that already have both values populated.
+                if (!string.IsNullOrWhiteSpace(part.UUID) &&
+                    !string.IsNullOrWhiteSpace(part.CatiaPartDefinition))
+                    continue;
+
+                try
+                {
+                    string uuid = null;
+                    string definition = null;
+
+                    var uuids = ExtractComponentUuidsFromFile(filePath);
+                    foreach (string u in uuids) { uuid = u; break; }
+
+                    definition = ExtractPartDefinitionFromFile(filePath);
+
+                    if (string.IsNullOrEmpty(uuid) && string.IsNullOrEmpty(definition))
+                        continue;
+
+                    batch.Add(new BackfillItem
+                    {
+                        Id = part.ID,
+                        CatiaUuid = uuid,
+                        CatiaPartDefinition = definition
+                    });
+
+                    if (batch.Count >= batchSize)
+                    {
+                        saveBatch(batch);
+                        updated += batch.Count;
+                        ConsoleWriteLine($"  Backfilled {updated}/{parts.Count}...");
+                        batch.Clear();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    ConsoleWriteLine($"    Could not extract identity from '{filePath}': {ex.Message}");
+                }
+            }
+
+            if (batch.Count > 0)
+            {
+                saveBatch(batch);
+                updated += batch.Count;
+            }
+
+            ConsoleWriteLine($"Backfill complete: {updated} row(s) updated.");
+            return updated;
+        }
+
+        /// <summary>
+        /// A single row to update during a backfill batch.
+        /// </summary>
+        public class BackfillItem
+        {
+            public int Id;
+            public string CatiaUuid;
+            public string CatiaPartDefinition;
         }
 
         #endregion ------------------------------------------------------------

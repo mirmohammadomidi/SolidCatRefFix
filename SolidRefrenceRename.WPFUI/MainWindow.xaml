@@ -52,6 +52,9 @@
                 <Button 
                  IsEnabled="{Binding IsRunning, Converter={StaticResource InverseBoolConverter}}" Height="30"
                 Padding="3" Margin="10 0 0 0" Content="Start Fixing Files" Click="Button_StartFixing_Click"/>
+                <Button 
+                 IsEnabled="{Binding IsRunning, Converter={StaticResource InverseBoolConverter}}" Height="30"
+                Padding="3" Margin="10 0 0 0" Content="Fill Site UUIDs" Click="Button_FillSiteUUID_Click"/>
                 <ComboBox x:Name="cmbSoftwareType" Width="100" Height="30" Margin="10 0 0 0" SelectedIndex="0">
                     <ComboBoxItem Content="SolidWorks" Tag="{x:Static local1:SoftwareType.Solid}"/>
                     <ComboBoxItem Content="CATIA" Tag="{x:Static local1:SoftwareType.Catia}"/>

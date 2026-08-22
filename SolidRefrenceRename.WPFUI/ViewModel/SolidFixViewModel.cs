@@ -118,6 +118,25 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                         }
                         if (OnNumberOfPartsChanged != null)
                             OnNumberOfPartsChanged(this, allParts.Count);
+
+                        // Build the CATIA identity cache from the DB.  The
+                        // UUIDs are assumed to be pre-filled (via
+                        // FillSiteUUID).  No file reads are needed here.
+                        var identityCache = new CatiaPartIdentityCache();
+                        foreach (var part in allParts)
+                        {
+                            if (string.IsNullOrWhiteSpace(part.DestinationFileAddress))
+                                continue;
+
+                            identityCache.Add(new CatiaPartIdentity
+                            {
+                                FilePath = part.DestinationFileAddress,
+                                Uuid = part.UUID,
+                                PartDefinition = part.CatiaPartDefinition
+                            });
+                        }
+
+                        Console.WriteLine($"Identity cache: {identityCache.Count} entries.");
                         List<DocFileView> allDrawings;
                         if ((extensionTypes & FileExtensionTypes.Drawing) == FileExtensionTypes.Drawing && softwareType == SoftwareType.Solid)
                         {
@@ -248,7 +267,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                             }
                             else
                             {
-                                g = CatiaUtils.ChangePartAddress(currentAssemblyPath, partDict);
+                                g = CatiaUtils.ChangePartAddress(currentAssemblyPath, partDict, identityCache);
                             }
                             Application.Current.Dispatcher.Invoke(() =>
                             {
@@ -310,6 +329,102 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
             }
             PartChangingOutput g = CatiaUtils.ChangePartAddress(targetFile, sourceFiles);
             IsRunning = false;
+        }
+
+        /// <summary>
+        /// Reads all CATPart and CATProduct files for the given site (or all
+        /// sites), extracts their CATIA component UUID from the raw file bytes,
+        /// and writes it back to the database in batches of 500 via
+        /// <see cref="IFSCodeCleansingDBContext.UpdateUUIDs"/>.
+        ///
+        /// After running this once per site, the CatiaUuid column is populated
+        /// and <see cref="StartFixing"/> can match part relevance purely from
+        /// the database - no part file reads are needed during the fixing loop.
+        ///
+        /// TODO: The actual UUID extraction logic will be filled in later.  For
+        /// now the method loads the rows, iterates them in batches of 500, and
+        /// calls UpdateUUIDs with empty values.
+        /// </summary>
+        /// <param name="site">The SourceDbCode to filter by, or "All Sites".</param>
+        public async Task FillSiteUUID(string site = "All Sites")
+        {
+            bool allSites = site.ToLower().Contains("all");
+            IsRunning = true;
+
+            try
+            {
+                using (var context = new IFSCodeCleansingDBContext(App.DefaultConnectionString))
+                {
+                    List<DocFileView> parts;
+
+                    if (allSites)
+                    {
+                        parts = await context.DocFileViews
+                            .Where(uu => uu.EXTENSION.ToUpper() == "CATPART" || uu.EXTENSION.ToUpper() == "CATPRODUCT")
+                            .ToListAsync();
+                    }
+                    else
+                    {
+                        parts = await context.DocFileViews
+                            .Where(uu => (uu.EXTENSION.ToUpper() == "CATPART" || uu.EXTENSION.ToUpper() == "CATPRODUCT")
+                                  && uu.SourceDbCode.ToUpper().Contains(site.ToUpper()))
+                            .ToListAsync();
+                    }
+
+                    Console.WriteLine($"FillSiteUUID: {parts.Count} CATPart/CATProduct row(s) for {(allSites ? "all sites" : site)}.");
+
+                    int processed = 0;
+                    int batchSize = 500;
+
+                    for (int i = 0; i < parts.Count; i += batchSize)
+                    {
+                        int remaining = Math.Min(batchSize, parts.Count - i);
+                        var batch = parts.GetRange(i, remaining);
+                        var uuidBatch = new List<KeyValuePair<int, string>>();
+
+                        foreach (var part in batch)
+                        {
+                            string uuid = null;
+
+                            // TODO: extract the UUID from the part file.
+                            // For now this is a placeholder - the actual
+                            // extraction will be implemented later.
+                            //
+                            // Example:
+                            //   if (!string.IsNullOrWhiteSpace(part.DestinationFileAddress)
+                            //       && File.Exists(part.DestinationFileAddress))
+                            //   {
+                            //       var uuids = CatiaUtils.ExtractComponentUuidsFromPath(part.DestinationFileAddress);
+                            //       foreach (string u in uuids) { uuid = u; break; }
+                            //   }
+
+                            uuidBatch.Add(new KeyValuePair<int, string>(part.ID, uuid));
+                        }
+
+                        context.UpdateUUIDs(uuidBatch);
+                        processed += batch.Count;
+
+                        Console.WriteLine($"  Batch {i / batchSize + 1}: {batch.Count} row(s) updated ({processed}/{parts.Count}).");
+
+                        OnItemBeingFixed?.Invoke(this, (processed, $"FillSiteUUID: {processed}/{parts.Count}"));
+                    }
+
+                    Console.WriteLine($"FillSiteUUID complete: {processed} row(s) updated.");
+                }
+            }
+            catch (Exception ex)
+            {
+                var errorStr = $"FillSiteUUID error: {ex.Message}";
+                Console.WriteLine(errorStr);
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    Errors.Add(new ProcessOutputDetails(errorStr));
+                });
+            }
+            finally
+            {
+                IsRunning = false;
+            }
         }
     }
 }

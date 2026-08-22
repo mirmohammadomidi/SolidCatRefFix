@@ -181,5 +181,20 @@ namespace SolidRefrenceRename.WPFUI
                 ViewModel.IsRunning = false;         // re‑enable the button
             }
         }
+
+        private async void Button_FillSiteUUID_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                txbLog.Text = string.Empty;
+                ViewModel.IsRunning = true;
+                var site = ((ComboBoxItem)cmbSites.SelectedItem)?.Content?.ToString() ?? "All Sites";
+                await ViewModel.FillSiteUUID(site);
+            }
+            finally
+            {
+                ViewModel.IsRunning = false;
+            }
+        }
     }
 }

@@ -123,6 +123,7 @@
     <Compile Include="Lib\PartChangingOutput.cs" />
     <Compile Include="Lib\SoftwareType.cs" />
     <Compile Include="Lib\CatiaUtils.cs" />
+    <Compile Include="Lib\CatiaPartIdentity.cs" />
     <Compile Include="Models\ProcessOutputDetails.cs" />
     <Compile Include="ViewModel\SolidFixViewModel.cs" />
     <Page Include="MainWindow.xaml">
