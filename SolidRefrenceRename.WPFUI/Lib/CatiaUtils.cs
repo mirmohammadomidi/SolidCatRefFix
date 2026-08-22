@@ -316,10 +316,27 @@ namespace CatiaReferenceRename.WPFUI.Lib
             try
             {
                 // -------------------------------------------------------------
-                // 1-  Stage every replacement file under its ORIGINAL name in
-                //     the assembly's folder, so the components resolve on open.
+                // 1-  Stage the replacement files that are RELEVANT to this
+                //     product under their ORIGINAL name in the assembly's
+                //     folder, so the components resolve on open.
+                //
+                //     Relevance is determined by COMPONENT UUID (the product
+                //     and each part file store matching UUIDs as plain text)
+                //     or by PART DEFINITION (part number).  When neither
+                //     strategy identifies any entry, all map entries are
+                //     staged (the pruning step in ReplaceReferencesInProduct
+                //     will delete the irrelevant ones after the product is
+                //     opened).
                 // -------------------------------------------------------------
-                foreach (var kvp in renameMap)
+                var relevantEntries = FindRelevantRenameMapEntries(productPath, renameMap);
+                if (relevantEntries.Count == 0)
+                {
+                    ConsoleWriteLine("  No relevance match found - staging all map entries (irrelevant ones will be pruned after open).");
+                    foreach (var kvp in renameMap)
+                        relevantEntries.Add(kvp);
+                }
+
+                foreach (var kvp in relevantEntries)
                 {
                     StageProductComponent(productPath, kvp.Key, kvp.Value, stagedFiles, movedOriginals);
                 }
@@ -349,7 +366,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
                 var outcome = new ProductReplaceOutcome();
 
                 ReplaceReferencesInProduct(
-                    rootProduct, renameMap, alreadyReplaced, convertedItems, documentsToClose, outcome);
+                    rootProduct, renameMap, alreadyReplaced, convertedItems, documentsToClose, outcome, stagedFiles);
 
                 // Nothing to relink is SUCCESS, not failure: the assembly may
                 // already point at the new files (re-run) or simply contain no
@@ -428,9 +445,19 @@ namespace CatiaReferenceRename.WPFUI.Lib
         }
 
         /// <summary>
-        /// Copies a replacement file under its ORIGINAL name into the assembly's
-        /// folder so CATIA can resolve the component while opening the product.
-        /// A real file already sitting there is moved aside and restored later.
+        /// Stages a replacement file under its ORIGINAL name in the assembly's
+        /// folder, so CATIA can resolve the component while opening the product.
+        ///
+        /// Only files that are MISSING from the staging location are staged: an
+        /// old file that already sits there means the component is ALREADY
+        /// resolved, so no staging is needed (and overwriting a real old file
+        /// with the new content would be pointless and risky).
+        ///
+        /// Staging uses an NTFS HARD LINK when possible (instant, shares the
+        /// new file's data - no bytes copied), so staging hundreds of missing
+        /// entries costs nothing. Hard links require the staging folder and the
+        /// new file to live on the same volume; across volumes it falls back to
+        /// a regular file copy.
         /// </summary>
         private static void StageProductComponent(
             string productPath,
@@ -459,37 +486,250 @@ namespace CatiaReferenceRename.WPFUI.Lib
             if (string.Equals(NormalizePath(location), NormalizePath(newPath), StringComparison.OrdinalIgnoreCase))
                 return;
 
+            // The old file already exists at the staging location: the component
+            // is already resolved, so there is nothing to stage. Staging would
+            // only overwrite a real file with the new content for no benefit.
+            if (System.IO.File.Exists(location))
+                return;
+
+            // Create the staging directory if it vanished (the old file's folder
+            // may no longer exist even though the product references it).
+            try { if (!Directory.Exists(directory)) Directory.CreateDirectory(directory); }
+            catch (Exception ex)
+            {
+                ConsoleWriteLine($"    ERROR: staging directory does not exist and could not be created ({ex.Message}): {directory}");
+                return;
+            }
+
             try
             {
-                if (System.IO.File.Exists(location))
+                ClearReadOnly(location);
+
+                // Prefer a hard link (instant, no data copy) - works when both
+                // paths are on the same NTFS volume.
+                bool linked = false;
+                try
                 {
-                    string backupPath = location + ".relink_orig";
-                    try
-                    {
-                        ClearReadOnly(location);
-                        if (System.IO.File.Exists(backupPath))
-                            System.IO.File.Delete(backupPath);
-                        System.IO.File.Move(location, backupPath);
-                        movedOriginals[backupPath] = location;
-                        ConsoleWriteLine($"  Existing file moved aside (restored later): {location}");
-                    }
-                    catch (Exception ex)
-                    {
-                        ConsoleWriteLine($"    Could not move the existing file aside ({ex.Message}) - skipping: {location}");
-                        return;
-                    }
+                    linked = CreateHardLink(location, newPath, IntPtr.Zero);
+                }
+                catch
+                {
+                    // fall through to copy
                 }
 
-                System.IO.File.Copy(newPath, location, overwrite: true);
-                ClearReadOnly(location);
+                if (!linked)
+                {
+                    // Cross-volume (or non-NTFS): fall back to a real copy.
+                    System.IO.File.Copy(newPath, location, overwrite: true);
+                    ClearReadOnly(location);
+                }
+
                 stagedFiles.Add(location);
-                ConsoleWriteLine($"  Staged replacement under its original name: {location}");
+                ConsoleWriteLine($"  Staged replacement under its original name{(linked ? " (hard link)" : "")}: {location}");
             }
             catch (Exception ex)
             {
                 ConsoleWriteLine($"    ERROR: could not stage '{location}': {ex.Message}");
             }
         }
+
+        /// <summary>
+        /// Returns only the rename-map entries whose NEW file is relevant to
+        /// the given document (CATProduct or CATDrawing).
+        ///
+        /// Two matching strategies are tried, in order:
+        ///
+        /// 1. COMPONENT UUID: the document file and each part file store
+        ///    UUID-like tokens (e.g. "DR01AAA01") as plain ASCII.  A map entry
+        ///    is relevant when its new file's UUID set intersects the document's
+        ///    UUID set.  This is the primary strategy for CATProduct files.
+        ///
+        /// 2. PART DEFINITION (part number): each part file stores its part
+        ///    number after a "PartNumber._Definition." marker (e.g.
+        ///    "F20435V1").  The document file may contain that same token (a
+        ///    CATDrawing stores it in the title block, a CATProduct in its
+        ///    own PartNumber).  A map entry is relevant when its new file's
+        ///    Definition appears in the document file.  This is the primary
+        ///    strategy for CATDrawing files.
+        ///
+        /// When neither strategy identifies any entry, an empty list is
+        /// returned and the caller decides on a fallback (products stage all
+        /// entries; drawings fall back to the filename convention).
+        /// </summary>
+        private static List<KeyValuePair<string, string>> FindRelevantRenameMapEntries(
+            string documentPath,
+            Dictionary<string, string> renameMap)
+        {
+            var result = new List<KeyValuePair<string, string>>();
+
+            // ---- Strategy 1: component UUID intersection ----
+            var documentUuids = ExtractComponentUuidsFromFile(documentPath);
+            if (documentUuids.Count > 0)
+            {
+                ConsoleWriteLine($"  Document references {documentUuids.Count} component UUID(s): {string.Join(", ", documentUuids.OrderBy(p => p))}");
+
+                foreach (var kvp in renameMap)
+                {
+                    if (!System.IO.File.Exists(kvp.Value))
+                    {
+                        ConsoleWriteLine($"    ERROR: new file not found - cannot fix '{GetFileNameSafe(kvp.Key)}': {kvp.Value}");
+                        continue;
+                    }
+
+                    var partUuids = ExtractComponentUuidsFromFile(kvp.Value);
+                    bool relevant = false;
+                    foreach (string uuid in partUuids)
+                    {
+                        if (documentUuids.Contains(uuid))
+                        {
+                            relevant = true;
+                            break;
+                        }
+                    }
+
+                    if (relevant)
+                    {
+                        result.Add(kvp);
+                        ConsoleWriteLine($"  Relevant: {GetFileNameSafe(kvp.Key)} (UUID match)");
+                    }
+                }
+
+                if (result.Count > 0)
+                    return result;
+
+                ConsoleWriteLine("  No UUID match - trying part-definition matching.");
+            }
+
+            // ---- Strategy 2: part definition (part number) ----
+            string documentText = ReadAsciiTextFromFile(documentPath);
+            if (!string.IsNullOrEmpty(documentText))
+            {
+                foreach (var kvp in renameMap)
+                {
+                    if (!System.IO.File.Exists(kvp.Value))
+                    {
+                        ConsoleWriteLine($"    ERROR: new file not found - cannot fix '{GetFileNameSafe(kvp.Key)}': {kvp.Value}");
+                        continue;
+                    }
+
+                    bool alreadyAdded = false;
+                    foreach (var e in result)
+                    {
+                        if (string.Equals(e.Key, kvp.Key, StringComparison.OrdinalIgnoreCase))
+                        {
+                            alreadyAdded = true;
+                            break;
+                        }
+                    }
+                    if (alreadyAdded)
+                        continue;
+
+                    string definition = ExtractPartDefinitionFromFile(kvp.Value);
+                    if (string.IsNullOrEmpty(definition))
+                        continue;
+
+                    if (documentText.IndexOf(definition, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        result.Add(kvp);
+                        ConsoleWriteLine($"  Relevant: {GetFileNameSafe(kvp.Key)} (part definition '{definition}' found in document)");
+                    }
+                }
+
+                if (result.Count > 0)
+                    return result;
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Reads a file as ASCII text with all non-printable control characters
+        /// (0x00-0x1F, 0x7F) replaced by '.'.  CATIA V5 files store
+        /// human-readable strings separated by control characters, so this
+        /// normalization makes them searchable with ordinary regex/string ops.
+        /// </summary>
+        private static string ReadAsciiTextFromFile(string filePath)
+        {
+            if (string.IsNullOrEmpty(filePath) || !System.IO.File.Exists(filePath))
+                return null;
+
+            byte[] bytes;
+            try { bytes = System.IO.File.ReadAllBytes(filePath); }
+            catch { return null; }
+
+            var sb = new StringBuilder(bytes.Length);
+            foreach (byte b in bytes)
+            {
+                sb.Append((b >= 0x20 && b < 0x7F) ? (char)b : '.');
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Extracts the part definition (part number) from a CATPart file.
+        ///
+        /// CATIA stores it after a "PartNumber._Definition." marker, separated
+        /// by control characters (not dots).  After normalizing those to '.',
+        /// the pattern is <c>PartNumber._Definition.XXXX</c> where XXXX is the
+        /// part number (e.g. "F20435V1").
+        /// </summary>
+        private static string ExtractPartDefinitionFromFile(string filePath)
+        {
+            string text = ReadAsciiTextFromFile(filePath);
+            if (string.IsNullOrEmpty(text))
+                return null;
+
+            var match = Regex.Match(text, @"PartNumber\._Definition\.([A-Za-z0-9_\-]+)");
+            if (match.Success)
+                return match.Groups[1].Value;
+
+            return null;
+        }
+
+        /// <summary>
+        /// Extracts the component UUIDs stored inside a CATIA V5 file.
+        ///
+        /// CATIA V5 files (CATProduct, CATPart, ...) use the proprietary
+        /// V5_CFV2 container, but component UUIDs are stored as plain ASCII
+        /// strings.  A UUID matches the pattern <c>[A-Z]{2}[0-9]{2}[A-Z]{3}
+        /// [0-9]{2}</c> (e.g. "DR01AAA01").  The product file lists the UUID
+        /// of every component instance; each part file contains its own UUID.
+        ///
+        /// File PATHS are NOT stored as plain text, so the UUID is the only
+        /// bridge between a product and its referenced parts before the
+        /// product is opened.
+        /// </summary>
+        private static HashSet<string> ExtractComponentUuidsFromFile(string filePath)
+        {
+            var uuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrEmpty(filePath) || !System.IO.File.Exists(filePath))
+                return uuids;
+
+            byte[] bytes;
+            try { bytes = System.IO.File.ReadAllBytes(filePath); }
+            catch { return uuids; }
+
+            // The UUIDs are stored as plain ASCII.  Scan the raw bytes directly
+            // with a regex - no need to build printable-string runs first.
+            string ascii = System.Text.Encoding.ASCII.GetString(bytes);
+
+            // CATIA component UUID pattern: 2 uppercase letters, 2 digits,
+            // 3 uppercase letters, 2 digits (e.g. DR01AAA01).
+            var regex = new Regex("[A-Z]{2}[0-9]{2}[A-Z]{3}[0-9]{2}");
+            foreach (Match match in regex.Matches(ascii))
+            {
+                if (match.Value.Length >= 8)
+                    uuids.Add(match.Value);
+            }
+
+            return uuids;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool CreateHardLink(
+            string lpFileName,
+            string lpExistingFileName,
+            IntPtr lpSecurityAttributes);
 
         /// <summary>
         /// Recursively walks a Product tree and relinks every child component
@@ -506,7 +746,8 @@ namespace CatiaReferenceRename.WPFUI.Lib
             HashSet<string> replacedPaths,
             List<string> convertedItems,
             List<string> documentsToClose,
-            ProductReplaceOutcome outcome)
+            ProductReplaceOutcome outcome,
+            List<string> stagedFiles)
         {
             Products childProducts = null;
             try { childProducts = currentProduct.Products; }
@@ -532,6 +773,16 @@ namespace CatiaReferenceRename.WPFUI.Lib
             // -------------------------------------------------------------
             var toReplace = new List<ProductComponentFix>();
             var toRecurse = new List<Product>();
+            var referencedStagedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // Pre-compute the normalised staged paths so we can tell which
+            // staged copies the components actually resolved to.
+            var normalizedStaged = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (stagedFiles != null)
+            {
+                foreach (string s in stagedFiles)
+                    normalizedStaged.Add(NormalizePath(s));
+            }
 
             var knownNewPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (string value in renameMap.Values)
@@ -546,6 +797,14 @@ namespace CatiaReferenceRename.WPFUI.Lib
                     object child = childProducts.Item(i);
                     string instanceName = GetComStringPropertySafe(child, "Name");
                     string currentFile = GetComponentFilePath(child);
+
+                    // Track which staged copies are actually referenced by a
+                    // component - the rest are pruned before the replace phase.
+                    if (!string.IsNullOrEmpty(currentFile) && normalizedStaged.Count > 0)
+                    {
+                        if (normalizedStaged.Contains(NormalizePath(currentFile)))
+                            referencedStagedPaths.Add(NormalizePath(currentFile));
+                    }
 
                     if (string.IsNullOrEmpty(currentFile))
                     {
@@ -621,6 +880,36 @@ namespace CatiaReferenceRename.WPFUI.Lib
             }
 
             // -------------------------------------------------------------
+            // 1b- Prune: delete every staged copy that NO component resolved
+            //     to.  This keeps the product folder clean - only the files
+            //     this product actually references remain during the replace
+            //     and save phases.
+            // -------------------------------------------------------------
+            if (stagedFiles != null && stagedFiles.Count > 0)
+            {
+                var toPrune = new List<string>();
+                foreach (string s in stagedFiles)
+                {
+                    if (!referencedStagedPaths.Contains(NormalizePath(s)))
+                        toPrune.Add(s);
+                }
+                foreach (string s in toPrune)
+                {
+                    try
+                    {
+                        ClearReadOnly(s);
+                        System.IO.File.Delete(s);
+                        stagedFiles.Remove(s);
+                        ConsoleWriteLine($"  Pruned irrelevant staged file: {s}");
+                    }
+                    catch (Exception ex)
+                    {
+                        ConsoleWriteLine($"    Could not prune irrelevant staged file '{s}': {ex.Message}");
+                    }
+                }
+            }
+
+            // -------------------------------------------------------------
             // 2-  Perform the replacements and VERIFY each one by reading the
             //     component's file back.
             // -------------------------------------------------------------
@@ -683,7 +972,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
                     // (its COM proxy would throw).
                     string _ = sub.get_Name();
                     ReplaceReferencesInProduct(
-                        sub, renameMap, replacedPaths, convertedItems, documentsToClose, outcome);
+                        sub, renameMap, replacedPaths, convertedItems, documentsToClose, outcome, stagedFiles);
                 }
                 catch (COMException) { /* ignore dead objects */ }
             }
@@ -1213,11 +1502,12 @@ namespace CatiaReferenceRename.WPFUI.Lib
         /// <summary>
         /// Builds the list of rename-map entries this drawing points at.
         ///
-        /// The primary source of truth is the CATDrawing file itself: the stored
-        /// link paths are extracted from it, so an entry matches no matter which
-        /// old address the drawing recorded.  The historical naming convention
-        /// (drawing "E1031F-F20435V1-1-R1-1" references part "F20435V1") is used
-        /// as a fallback when the file cannot be parsed.
+        /// Relevance is determined by the same multi-strategy approach used for
+        /// products (<see cref="FindRelevantRenameMapEntries"/>): component UUID
+        /// intersection, then part-definition (part number) matching.  When
+        /// neither identifies any entry, the historical file-name convention
+        /// (drawing "E1031F-F20435V1-1-R1-1" references part "F20435V1") is
+        /// used as the final fallback.
         /// </summary>
         private static List<DrawingLinkFix> BuildDrawingLinkFixes(
             string drawingPath,
@@ -1229,25 +1519,38 @@ namespace CatiaReferenceRename.WPFUI.Lib
             string drawingBaseName = Path.GetFileNameWithoutExtension(drawingPath);
             string normalizedDrawingPath = NormalizePath(drawingPath);
 
+            // ---- Try UUID + part-definition matching first (same as products) ----
+            var relevantEntries = FindRelevantRenameMapEntries(drawingPath, renameMap);
+
+            // ---- If that found nothing, fall back to the filename convention ----
+            if (relevantEntries.Count == 0)
+            {
+                ConsoleWriteLine("  No UUID or part-definition match - using the file-name convention.");
+
+                foreach (var kvp in renameMap)
+                {
+                    string oldFileName = GetFileNameSafe(kvp.Key);
+                    string oldBaseName = Path.GetFileNameWithoutExtension(oldFileName);
+                    if (string.IsNullOrWhiteSpace(oldBaseName)) continue;
+
+                    bool matchesConvention =
+                        drawingBaseName.IndexOf(oldBaseName + "-", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        string.Equals(drawingBaseName, oldBaseName, StringComparison.OrdinalIgnoreCase);
+
+                    if (matchesConvention && System.IO.File.Exists(kvp.Value))
+                        relevantEntries.Add(kvp);
+                }
+            }
+
             List<string> storedReferences = ExtractLinkedDocumentPathsFromFile(drawingPath);
             if (storedReferences.Count > 0)
             {
                 ConsoleWriteLine($"  {storedReferences.Count} 3D reference(s) stored in the drawing:");
                 foreach (string reference in storedReferences)
-                {
                     ConsoleWriteLine($"    {reference}");
-                }
-            }
-            else
-            {
-                // Recent CATIA containers (header "V5_CFV2") do not store the
-                // link paths as plain text, so this is the normal case: the
-                // file-name convention plus the drawing's own folder is used to
-                // decide where to stage the replacement.
-                ConsoleWriteLine("  No stored 3D reference is readable from the drawing file - using the file-name convention.");
             }
 
-            foreach (var kvp in renameMap)
+            foreach (var kvp in relevantEntries)
             {
                 string mapKey = kvp.Key;
                 string newPath = kvp.Value;
@@ -1274,13 +1577,6 @@ namespace CatiaReferenceRename.WPFUI.Lib
                     if (sameName)
                         storedPaths.Add(reference);
                 }
-
-                // b) file-name convention fallback
-                bool matchesConvention =
-                    drawingBaseName.IndexOf(oldBaseName + "-", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    string.Equals(drawingBaseName, oldBaseName, StringComparison.OrdinalIgnoreCase);
-
-                if (storedPaths.Count == 0 && !matchesConvention) continue;
 
                 if (!System.IO.File.Exists(newPath))
                 {
