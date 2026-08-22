@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 17
-VisualStudioVersion = 17.14.36616.10
+# Visual Studio Version 18
+VisualStudioVersion = 18.8.12105.206 oobstable
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SolidRefrenceRename.ConsoleTest1", "SolidRefrenceRename.ConsoleTest1\SolidRefrenceRename.ConsoleTest1.csproj", "{1F689227-C31F-44EF-B6E2-FF143D7BC28E}"
 EndProject
@@ -22,6 +22,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "CatiaNili", "CatiaNili", "{
 		SolutionItems\CatiaNili\ai_studio_code.cs = SolutionItems\CatiaNili\ai_studio_code.cs
 		SolutionItems\CatiaNili\New Text Document.txt = SolutionItems\CatiaNili\New Text Document.txt
 	EndProjectSection
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SolidRefrenceRename.WPFUI.ViewModel", "SolidRefrenceRename.WPFUI.ViewModel\SolidRefrenceRename.WPFUI.ViewModel.csproj", "{BA9EA91D-4887-9976-F551-AF799DAE41DD}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -53,6 +55,10 @@ Global
 		{BB62BC78-600C-47F8-8382-1AB5AC06A10B}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{BB62BC78-600C-47F8-8382-1AB5AC06A10B}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{BB62BC78-600C-47F8-8382-1AB5AC06A10B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BA9EA91D-4887-9976-F551-AF799DAE41DD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BA9EA91D-4887-9976-F551-AF799DAE41DD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BA9EA91D-4887-9976-F551-AF799DAE41DD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BA9EA91D-4887-9976-F551-AF799DAE41DD}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

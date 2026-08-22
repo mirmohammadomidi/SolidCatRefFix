@@ -62,7 +62,6 @@
                 <ComboBox x:Name="cmbExtensionType" Width="110" Height="30" Margin="10 0 0 0" SelectedIndex="0">
                     <ComboBoxItem Content="All extensions" Tag="{x:Static local1:FileExtensionTypes.All}"/>
                     <ComboBoxItem Content="Assemblies" Tag="{x:Static local1:FileExtensionTypes.Assembly}"/>
-                    <ComboBoxItem Content="Parts" Tag="{x:Static local1:FileExtensionTypes.Part}"/>
                     <ComboBoxItem Content="Drawings" Tag="{x:Static local1:FileExtensionTypes.Drawing}"/>
                 </ComboBox>
                 <ComboBox x:Name="cmbSites" Width="110" Height="30"  Margin="10 0 0 0" SelectedIndex="0" IsEditable="True">

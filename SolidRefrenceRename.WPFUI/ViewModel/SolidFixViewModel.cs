@@ -263,7 +263,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                             PartChangingOutput g = null;
                             if (softwareType == SoftwareType.Solid)
                             {
-                                 g = SolidUtils.ChangePartAddress(currentAssemblyPath, partDict);
+                                 //g = SolidUtils.ChangePartAddress(currentAssemblyPath, partDict);
                             }
                             else
                             {
@@ -373,14 +373,20 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
 
                     Console.WriteLine($"FillSiteUUID: {parts.Count} CATPart/CATProduct row(s) for {(allSites ? "all sites" : site)}.");
 
+                    // Skip rows that already have a UUID - no need to read
+                    // them from disk again.
+                    var toProcess = parts.Where(p => string.IsNullOrWhiteSpace(p.UUID)).ToList();
+                    int skipped = parts.Count - toProcess.Count;
+                    Console.WriteLine($"  {skipped} row(s) already have a UUID - skipped.  {toProcess.Count} row(s) to process.");
+
                     int processed = 0;
                     int batchSize = 100;
 
-                    for (int i = 0; i < parts.Count; i += batchSize)
+                    for (int i = 0; i < toProcess.Count; i += batchSize)
                     {
 
-                        int remaining = Math.Min(batchSize, parts.Count - i);
-                        var batch = parts.GetRange(i, remaining);
+                        int remaining = Math.Min(batchSize, toProcess.Count - i);
+                        var batch = toProcess.GetRange(i, remaining);
                         var uuidBatch = new List<KeyValuePair<int, string>>();
 
                         try
@@ -389,22 +395,20 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                             {
                                 string uuid = null;
 
-                                // TODO: extract the UUID from the part file.
-                                // For now this is a placeholder - the actual
-                                // extraction will be implemented later.
-                                //
-                                // Example:
                                 if (!string.IsNullOrWhiteSpace(part.DestinationFileAddress)
                                     && File.Exists(part.DestinationFileAddress))
                                 {
                                     var uuids = CatiaUtils.ExtractComponentUuidsFromPath(part.DestinationFileAddress);
+                                    // Products may contain multiple UUIDs (one
+                                    // per component) - store them comma-separated.
+                                    var parts2 = new List<string>();
                                     foreach (string u in uuids)
                                     {
                                         if (!string.IsNullOrWhiteSpace(u))
-                                        {
-                                            uuid += u + ",";
-                                        }
+                                            parts2.Add(u);
                                     }
+                                    if (parts2.Count > 0)
+                                        uuid = string.Join(",", parts2);
                                 }
 
                                 uuidBatch.Add(new KeyValuePair<int, string>(part.ID, uuid));

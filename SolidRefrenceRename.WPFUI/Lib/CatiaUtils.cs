@@ -601,8 +601,21 @@ namespace CatiaReferenceRename.WPFUI.Lib
                         continue;
                     }
 
-                    string partUuid = GetCachedUuid(kvp.Value);
-                    if (!string.IsNullOrEmpty(partUuid) && documentUuids.Contains(partUuid))
+                    // The UUID field is comma-separated (products may have
+                    // multiple UUIDs).  Check if ANY of the part's UUIDs
+                    // intersects the document's UUID set.
+                    var partUuids = GetCachedUuids(kvp.Value);
+                    bool relevant = false;
+                    foreach (string uuid in partUuids)
+                    {
+                        if (documentUuids.Contains(uuid))
+                        {
+                            relevant = true;
+                            break;
+                        }
+                    }
+
+                    if (relevant)
                     {
                         result.Add(kvp);
                         ConsoleWriteLine($"  Relevant: {GetFileNameSafe(kvp.Key)} (UUID match)");
@@ -706,9 +719,12 @@ namespace CatiaReferenceRename.WPFUI.Lib
         ///
         /// CATIA V5 files (CATProduct, CATPart, ...) use the proprietary
         /// V5_CFV2 container, but component UUIDs are stored as plain ASCII
-        /// strings.  A UUID matches the pattern <c>[A-Z]{2}[0-9]{2}[A-Z]{3}
-        /// [0-9]{2}</c> (e.g. "DR01AAA01").  The product file lists the UUID
-        /// of every component instance; each part file contains its own UUID.
+        /// strings.  The UUID format varies by CATIA version:
+        ///   * R27/R29: 2 letters + 2 digits + 2-3 letters + 2 digits
+        ///     (e.g. "BR10AA04", "DR01AAA01")
+        ///   * R16/R17: shorter formats (e.g. "C0216") - not matched by the
+        ///     regex, but the PartNumber._Definition is always present and
+        ///     serves as the fallback identifier.
         ///
         /// File PATHS are NOT stored as plain text, so the UUID is the only
         /// bridge between a product and its referenced parts before the
@@ -729,8 +745,10 @@ namespace CatiaReferenceRename.WPFUI.Lib
             string ascii = System.Text.Encoding.ASCII.GetString(bytes);
 
             // CATIA component UUID pattern: 2 uppercase letters, 2 digits,
-            // 3 uppercase letters, 2 digits (e.g. DR01AAA01).
-            var regex = new Regex("[A-Z]{2}[0-9]{2}[A-Z]{3}[0-9]{2}");
+            // 2 OR 3 uppercase letters, 2 digits.
+            // This matches both "DR01AAA01" (3 middle letters, R17-era)
+            // and "BR10AA04" (2 middle letters, R27/R29-era).
+            var regex = new Regex("[A-Z]{2}[0-9]{2}[A-Z]{2,3}[0-9]{2}");
             foreach (Match match in regex.Matches(ascii))
             {
                 if (match.Value.Length >= 8)
@@ -741,24 +759,36 @@ namespace CatiaReferenceRename.WPFUI.Lib
         }
 
         /// <summary>
-        /// Returns the cached UUID for a part file, or reads it from disk when
-        /// the identity cache is empty or has no entry for this file.
+        /// Returns the cached UUIDs for a part file as a set, or reads them
+        /// from disk when the identity cache is empty or has no entry for this file.
+        ///
+        /// The UUID field in the database (and in the cache) is stored
+        /// comma-separated when a file contains multiple UUIDs (common for
+        /// CATProduct files).  This method splits on commas and returns every
+        /// UUID as a set so the caller can check intersection with the
+        /// document's UUID set.
         /// </summary>
-        private static string GetCachedUuid(string partFilePath)
+        private static HashSet<string> GetCachedUuids(string partFilePath)
         {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
             if (_identityCache != null && !_identityCache.IsEmpty)
             {
                 CatiaPartIdentity identity = _identityCache.Get(partFilePath);
-                if (identity != null)
-                    return identity.Uuid;
-                return null;
+                if (identity != null && !string.IsNullOrWhiteSpace(identity.Uuid))
+                {
+                    foreach (string u in identity.Uuid.Split(','))
+                        if (!string.IsNullOrWhiteSpace(u))
+                            result.Add(u.Trim());
+                }
+                return result;
             }
 
             // Fallback: read from disk.
-            var uuids = ExtractComponentUuidsFromFile(partFilePath);
-            foreach (string uuid in uuids)
-                return uuid;
-            return null;
+            foreach (string u in ExtractComponentUuidsFromFile(partFilePath))
+                result.Add(u);
+
+            return result;
         }
 
         /// <summary>
