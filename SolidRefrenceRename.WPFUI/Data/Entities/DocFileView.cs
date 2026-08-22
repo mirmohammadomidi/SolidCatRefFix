@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations.Schema;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -69,7 +70,8 @@ namespace SolidRefrenceRename.WPFUI.Data.Entities
         /// from the file bytes.  Used for drawing relevance matching.  NULL for
         /// non-CATIA files or parts that carry no definition.
         /// </summary>
-        public string CatiaPartDefinition { get; set; }
+        [NotMapped]
+        public string CatiaPartDefinition => DOCNO + "." + EXTENSION;
 
     }
 }

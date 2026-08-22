@@ -7,8 +7,7 @@ namespace SolidRefrenceRename.WPFUI.Lib
     {
         None = 0,
         Assembly = 1,
-        Part = 2,
         Drawing = 4,
-        All = Assembly | Part | Drawing
+        All = Assembly |  Drawing
     }
 }

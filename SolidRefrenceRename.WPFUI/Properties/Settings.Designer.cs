@@ -8,7 +8,7 @@
 // </auto-generated>
 //------------------------------------------------------------------------------
 
-namespace SolidRefrenceRename.WPFUI.Properties
+namespace SolidRefrenceRenameTest1.Properties
 {
 
 

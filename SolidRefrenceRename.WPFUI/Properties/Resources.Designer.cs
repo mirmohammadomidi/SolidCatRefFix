@@ -8,7 +8,7 @@
 // </auto-generated>
 //------------------------------------------------------------------------------
 
-namespace SolidRefrenceRename.WPFUI.Properties
+namespace SolidRefrenceRenameTest1.Properties
 {
 
 
@@ -44,7 +44,7 @@ namespace SolidRefrenceRename.WPFUI.Properties
             {
                 if ((resourceMan == null))
                 {
-                    global::System.Resources.ResourceManager temp = new global::System.Resources.ResourceManager("SolidRefrenceRename.WPFUI.Properties.Resources", typeof(Resources).Assembly);
+                    global::System.Resources.ResourceManager temp = new global::System.Resources.ResourceManager("SolidRefrenceRenameTest1.Properties.Resources", typeof(Resources).Assembly);
                     resourceMan = temp;
                 }
                 return resourceMan;

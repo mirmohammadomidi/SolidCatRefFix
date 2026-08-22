@@ -104,11 +104,11 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
 
                         var partDict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                         List<DocFileView> allParts;
-                        if ((extensionTypes & FileExtensionTypes.Part) == FileExtensionTypes.Part && softwareType == SoftwareType.Solid)
+                        if (softwareType == SoftwareType.Solid)
                         {
                             allParts = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "SLDPRT" || ((extensionTypes & FileExtensionTypes.Assembly) == FileExtensionTypes.Assembly && uu.EXTENSION.ToUpper() == "SLDASM")).ToListAsync();
                         }
-                        else if ((extensionTypes & FileExtensionTypes.Part) == FileExtensionTypes.Part && softwareType == SoftwareType.Catia)
+                        else if (softwareType == SoftwareType.Catia)
                         {
                             allParts = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATPART" || ((extensionTypes & FileExtensionTypes.Assembly) == FileExtensionTypes.Assembly && uu.EXTENSION.ToUpper() == "CATPRODUCT")).ToListAsync();
                         }
@@ -158,8 +158,8 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                             else
                             {
                                 allDrawings = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATDRAWING" && uu.SourceDbCode.ToUpper().Contains(site.ToUpper())).ToListAsync();
-                            }   
-                            
+                            }
+
                         }
                         else
                         {
@@ -232,7 +232,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                         else
                         {
                             assemblyList = allAssemblies.Select(uu => uu.DestinationFileAddress.Replace(patternToMatchAllFolderAddressWith, replaceAllFolderAddressWith)).ToList();
-                            var v2 =  allDrawings.Select(uu => uu.DestinationFileAddress.Replace(patternToMatchAllFolderAddressWith, replaceAllFolderAddressWith)).ToList();
+                            var v2 = allDrawings.Select(uu => uu.DestinationFileAddress.Replace(patternToMatchAllFolderAddressWith, replaceAllFolderAddressWith)).ToList();
                             assemblyList.AddRange(v2);
                         }
 
@@ -263,7 +263,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                             PartChangingOutput g = null;
                             if (softwareType == SoftwareType.Solid)
                             {
-                                // g = SolidUtils.ChangePartAddress(currentAssemblyPath, partDict);
+                                 g = SolidUtils.ChangePartAddress(currentAssemblyPath, partDict);
                             }
                             else
                             {
@@ -374,39 +374,58 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                     Console.WriteLine($"FillSiteUUID: {parts.Count} CATPart/CATProduct row(s) for {(allSites ? "all sites" : site)}.");
 
                     int processed = 0;
-                    int batchSize = 500;
+                    int batchSize = 100;
 
                     for (int i = 0; i < parts.Count; i += batchSize)
                     {
+
                         int remaining = Math.Min(batchSize, parts.Count - i);
                         var batch = parts.GetRange(i, remaining);
                         var uuidBatch = new List<KeyValuePair<int, string>>();
 
-                        foreach (var part in batch)
+                        try
                         {
-                            string uuid = null;
+                            foreach (var part in batch)
+                            {
+                                string uuid = null;
 
-                            // TODO: extract the UUID from the part file.
-                            // For now this is a placeholder - the actual
-                            // extraction will be implemented later.
-                            //
-                            // Example:
-                            //   if (!string.IsNullOrWhiteSpace(part.DestinationFileAddress)
-                            //       && File.Exists(part.DestinationFileAddress))
-                            //   {
-                            //       var uuids = CatiaUtils.ExtractComponentUuidsFromPath(part.DestinationFileAddress);
-                            //       foreach (string u in uuids) { uuid = u; break; }
-                            //   }
+                                // TODO: extract the UUID from the part file.
+                                // For now this is a placeholder - the actual
+                                // extraction will be implemented later.
+                                //
+                                // Example:
+                                if (!string.IsNullOrWhiteSpace(part.DestinationFileAddress)
+                                    && File.Exists(part.DestinationFileAddress))
+                                {
+                                    var uuids = CatiaUtils.ExtractComponentUuidsFromPath(part.DestinationFileAddress);
+                                    foreach (string u in uuids)
+                                    {
+                                        if (!string.IsNullOrWhiteSpace(u))
+                                        {
+                                            uuid += u + ",";
+                                        }
+                                    }
+                                }
 
-                            uuidBatch.Add(new KeyValuePair<int, string>(part.ID, uuid));
+                                uuidBatch.Add(new KeyValuePair<int, string>(part.ID, uuid));
+
+                            }
+
+                            context.UpdateUUIDs(uuidBatch);
+                            processed += batch.Count;
                         }
-
-                        context.UpdateUUIDs(uuidBatch);
-                        processed += batch.Count;
-
+                        catch (Exception ex0)
+                        {
+                            var errorStr = $"FillSiteUUID1 error: {ex0.Message}";
+                            Console.WriteLine(errorStr);
+                            Application.Current.Dispatcher.Invoke(() =>
+                            {
+                                Errors.Add(new ProcessOutputDetails(errorStr));
+                            });
+                        }
                         Console.WriteLine($"  Batch {i / batchSize + 1}: {batch.Count} row(s) updated ({processed}/{parts.Count}).");
 
-                        OnItemBeingFixed?.Invoke(this, (processed, $"FillSiteUUID: {processed}/{parts.Count}"));
+                        //OnItemBeingFixed?.Invoke(this, (processed, $"FillSiteUUID: {processed}/{parts.Count}"));
                     }
 
                     Console.WriteLine($"FillSiteUUID complete: {processed} row(s) updated.");
@@ -414,7 +433,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
             }
             catch (Exception ex)
             {
-                var errorStr = $"FillSiteUUID error: {ex.Message}";
+                var errorStr = $"FillSiteUUID2 error: {ex.Message}";
                 Console.WriteLine(errorStr);
                 Application.Current.Dispatcher.Invoke(() =>
                 {
