@@ -18,7 +18,7 @@ namespace SolidRefrenceRename.WPFUI.Lib
         private static SldWorks swApp;
         private static ModelDoc2 swModel;
         
-        public static PartChangingOutput ChangePartAddress(string currentAssemblyPath, Dictionary<string, string> newPartAddressMap)
+        public static PartChangingOutput ChangePartAddress(string currentAssemblyPath, List<PartNewRef> newPartAddressMap)
         {
 
             List<ProcessOutputDetails> errorsList = new List<ProcessOutputDetails>();
@@ -53,7 +53,7 @@ namespace SolidRefrenceRename.WPFUI.Lib
                 var normalizedRenameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var kvp in newPartAddressMap)
                 {
-                    normalizedRenameMap[NormalizePath(kvp.Key)] = NormalizePath(kvp.Value);
+                    normalizedRenameMap[NormalizePath(kvp.PartName)] = NormalizePath(kvp.NewAddress);
                 }
                 // Get direct dependencies of the current assembly                   
                 // Traverseflag = false (we process level-by-level), Searchflag = true, AddReadOnlyInfo = false

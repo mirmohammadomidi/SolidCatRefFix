@@ -42,10 +42,18 @@
             <Label Padding="10 5 10 0" Grid.Row="0" Grid.Column="0" Content="Base address pattern to replace: (empty=use db addresses)"/>
             <Label Padding="10 5 10 0" Grid.Row="0" Grid.Column="1" Content="Pattern replacement: "/>
             <Label Padding="10 5 10 0" Grid.Row="0" Grid.Column="2" Content="Just include these new file names to fix: (empty=all) "/>
-            <TextBox Height="35" Padding="3" Margin="5" x:Name="txbBasePattern" Grid.Row="1" Grid.Column="0" Text=""/>
-            <TextBox Height="35" Padding="3" Margin="5" x:Name="txbReplace" Grid.Row="1" Grid.Column="1" Text="" />
+            <TextBox Height="35" Padding="3" Margin="5" x:Name="txbBasePattern" Grid.Row="1" Grid.Column="0" Text="\\192.168.42.91\ifs\ifs\path\AFP"/>
+            <TextBox Height="35" Padding="3" Margin="5" x:Name="txbReplace" Grid.Row="1" Grid.Column="1" Text="\\192.168.1.4\bcybersql\ifs\path" />
             <TextBox Padding="3" Margin="5" x:Name="txbJustInclude" TextWrapping="Wrap" Grid.Row="1" Grid.Column="2" 
-                     Text="E1031F-F20432V1-1-R1-1.CATDrawing"/>
+                     Text="E1031FAB-FAB257V1-1-R1-1.CATProduct">
+                <TextBox.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem  x:Name="miGetComponentUUIDsOfProduct"  Header="Get Components UUIDs" Click="miGetComponentUUIDsOfProduct_Click"/>
+                        <MenuItem x:Name="miGetPartUUIDFromFile" Header="Get Part UUID from file" Click="miGetPartUUIDFromFile_Click"/>
+                        <MenuItem x:Name="miGetPartCodeFromFile" Header="Get Part Code from file" Click="miGetPartCodeFromFile_Click"/>
+                    </ContextMenu>
+                </TextBox.ContextMenu>
+            </TextBox>
         </Grid>
         <StackPanel Grid.Column="0" Grid.Row="4"  Orientation="Vertical">
             <StackPanel Orientation="Horizontal">
@@ -54,17 +62,17 @@
                 Padding="3" Margin="10 0 0 0" Content="Start Fixing Files" Click="Button_StartFixing_Click"/>
                 <Button 
                  IsEnabled="{Binding IsRunning, Converter={StaticResource InverseBoolConverter}}" Height="30"
-                Padding="3" Margin="10 0 0 0" Content="Fill Site UUIDs" Click="Button_FillSiteUUID_Click"/>
-                <ComboBox x:Name="cmbSoftwareType" Width="100" Height="30" Margin="10 0 0 0" SelectedIndex="0">
+                Padding="3" Margin="10 0 0 0" Visibility="Collapsed" Content="Fill Site UUIDs" Click="Button_FillSiteUUID_Click"/>
+                <ComboBox x:Name="cmbSoftwareType" Width="100" Height="30" Margin="10 0 0 0" SelectedIndex="1">
                     <ComboBoxItem Content="SolidWorks" Tag="{x:Static local1:SoftwareType.Solid}"/>
                     <ComboBoxItem Content="CATIA" Tag="{x:Static local1:SoftwareType.Catia}"/>
                 </ComboBox>
-                <ComboBox x:Name="cmbExtensionType" Width="110" Height="30" Margin="10 0 0 0" SelectedIndex="0">
+                <ComboBox x:Name="cmbExtensionType" Width="110" Height="30" Margin="10 0 0 0" SelectedIndex="1">
                     <ComboBoxItem Content="All extensions" Tag="{x:Static local1:FileExtensionTypes.All}"/>
                     <ComboBoxItem Content="Assemblies" Tag="{x:Static local1:FileExtensionTypes.Assembly}"/>
                     <ComboBoxItem Content="Drawings" Tag="{x:Static local1:FileExtensionTypes.Drawing}"/>
                 </ComboBox>
-                <ComboBox x:Name="cmbSites" Width="110" Height="30"  Margin="10 0 0 0" SelectedIndex="0" IsEditable="True">
+                <ComboBox x:Name="cmbSites" Width="110" Height="30"  Margin="10 0 0 0" SelectedIndex="2" IsEditable="True">
                     <ComboBoxItem Content="All Sites" />
                     <ComboBoxItem Content="A"/>
                     <ComboBoxItem Content="B" />
@@ -79,10 +87,10 @@
                 <TextBox x:Name="txbCatiaTargetFile" Width="350" Margin="10 0 0 0"  Height="30" Text="C:\Catia\E1031FA-FA20174V1-2-R1-1.CATProduct"/>
                 <TextBlock x:Name="txbParts" Text="Parts addresses: " Margin="10 0 0 0" VerticalAlignment="Center"/>
                 <TextBox x:Name="txbSourceFiles" MinWidth="200" MaxLines="50" Width="400"  TextWrapping="Wrap" Margin="10 0 0 0"  Height="100" 
-                         Text="F20435V1.CATPart;C:\CatiaParts\E1031F-F20435V1-2-R1-1.CATPart,
-                               F20427V1.CATPart;C:\CatiaParts\E1031F-F20427V1-3-R1-1.CATPart,
-                               F20428V1.CATPart;C:\CatiaParts\E1031F-F20428V1-3-R1-1.CATPart,
-                               F20429V1.CATPart;C:\CatiaParts\E1031F-F20429V1-3-R1-1.CATPart"/>
+                         Text="F20435V1.CATPart;C:\CatiaParts\E1031F-F20435V1-2-R1-1.CATPart;F20435V1,
+                               F20427V1.CATPart;C:\CatiaParts\E1031F-F20427V1-3-R1-1.CATPart;F20427V1,
+                               F20428V1.CATPart;C:\CatiaParts\E1031F-F20428V1-3-R1-1.CATPart;F20428V1,
+                               F20429V1.CATPart;C:\CatiaParts\E1031F-F20429V1-3-R1-1.CATPart;F20429V1"/>
             </StackPanel>
         </StackPanel>
         <StackPanel Grid.Column="0" Grid.Row="5"  Orientation="Horizontal">

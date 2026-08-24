@@ -119,8 +119,10 @@
     <Compile Include="Lib\Config\ConfigService.cs" />
     <Compile Include="Lib\Config\GeneralConfig.cs" />
     <Compile Include="Lib\FileExtensionTypes.cs" />
+    <Compile Include="Lib\FileNameUtils.cs" />
     <Compile Include="Lib\InverseBoolConverter.cs" />
     <Compile Include="Lib\PartChangingOutput.cs" />
+    <Compile Include="Lib\PartNewRef.cs" />
     <Compile Include="Lib\SoftwareType.cs" />
     <Compile Include="Lib\CatiaUtils.cs" />
     <Compile Include="Lib\CatiaPartIdentity.cs" />

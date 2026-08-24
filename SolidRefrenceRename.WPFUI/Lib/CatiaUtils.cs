@@ -35,21 +35,10 @@ namespace CatiaReferenceRename.WPFUI.Lib
         /// keyed by file path.  When non-null, relevance matching uses these
         /// cached UUIDs/part-definitions instead of reading every part file.
         /// </summary>
-        private static CatiaPartIdentityCache _identityCache;
 
         #region Public API -----------------------------------------------------
 
-        /// <summary>
-        /// Public entry that ensures CATIA COM calls are made from an STA thread.
-        /// If the current thread is not STA we spawn an STA thread to run the
-        /// actual work to avoid COM E_FAIL caused by apartment mismatch.
-        /// </summary>
-        public static PartChangingOutput ChangePartAddress(
-            string currentAssemblyPath,
-            Dictionary<string, string> newPartAddressMap)
-        {
-            return ChangePartAddress(currentAssemblyPath, newPartAddressMap, null);
-        }
+
 
         /// <summary>
         /// Overload that accepts a pre-computed identity cache so that
@@ -57,10 +46,8 @@ namespace CatiaReferenceRename.WPFUI.Lib
         /// </summary>
         public static PartChangingOutput ChangePartAddress(
             string currentAssemblyPath,
-            Dictionary<string, string> newPartAddressMap,
-            CatiaPartIdentityCache identityCache)
+            List<PartNewRef> newPartAddressMap)
         {
-            _identityCache = identityCache;
 
             if (Thread.CurrentThread.GetApartmentState() != ApartmentState.STA)
             {
@@ -100,7 +87,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
 
         private static PartChangingOutput ChangePartAddressInternal(
             string currentAssemblyPath,
-            Dictionary<string, string> newPartAddressMap)
+           List<PartNewRef> newPartAddressMap)
         {
             var errorsList = new List<ProcessOutputDetails>();
             var newAssembliesFound = new List<string>();
@@ -256,14 +243,14 @@ namespace CatiaReferenceRename.WPFUI.Lib
             return false;
         }
 
-        private static Dictionary<string, string> NormaliseRenameMap(
-            Dictionary<string, string> rawMap,
+        private static List<PartNewRef> NormaliseRenameMap(
+            List<PartNewRef> rawMap,
             string baseDirectory = null)
         {
-            var norm = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var norm = new List<PartNewRef>();
             foreach (var kvp in rawMap)
             {
-                norm[NormalizePath(kvp.Key, baseDirectory)] = NormalizePath(kvp.Value, baseDirectory);
+                norm.Add(new PartNewRef(kvp.PartName, NormalizePath(kvp.NewAddress, baseDirectory), kvp.Code));
             }
             return norm;
         }
@@ -310,7 +297,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
         /// </summary>
         private static void ProcessProduct(
             string productPath,
-            Dictionary<string, string> renameMap,
+            List<PartNewRef> renameMap,
             List<string> convertedItems,
             List<string> newAssembliesFound)
         {
@@ -354,7 +341,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
                 {
                     ConsoleWriteLine("  No relevance match found - staging all map entries (irrelevant ones will be pruned after open).");
                     foreach (var kvp in renameMap)
-                        relevantEntries.Add(kvp);
+                        relevantEntries.Add(new KeyValuePair<string, string>(kvp.PartName, kvp.NewAddress));
                 }
 
                 foreach (var kvp in relevantEntries)
@@ -583,89 +570,46 @@ namespace CatiaReferenceRename.WPFUI.Lib
         /// </summary>
         private static List<KeyValuePair<string, string>> FindRelevantRenameMapEntries(
             string documentPath,
-            Dictionary<string, string> renameMap)
+            List<PartNewRef> renameMap)
         {
             var result = new List<KeyValuePair<string, string>>();
+            // ---- Strategy 1: drawing of a cadfile
+            if (documentPath.ToLower().EndsWith(".catdrawing"))
+            {
+                var mainFileName = FileNameUtils.GetMainFileName(documentPath);
+                if (renameMap.Any(uu => uu.PartName.ToLower().EndsWith(mainFileName.ToLower() + ".catproduct")))
+                {
+                    var k1 = renameMap.FirstOrDefault(uu => uu.PartName.EndsWith(mainFileName.ToLower() + ".catproduct"));
+                    result.Add(new KeyValuePair<string, string>(k1.PartName, k1.NewAddress));
+                    return result;
+                }
+                if (renameMap.Any(uu => uu.PartName.ToLower().EndsWith(mainFileName.ToLower() + ".catpart")))
+                {
+                    var k1 = renameMap.FirstOrDefault(uu => uu.PartName.EndsWith(mainFileName.ToLower() + ".catpart"));
+                    result.Add(new KeyValuePair<string, string>(k1.PartName, k1.NewAddress));
+                    return result;
+                }
 
-            // ---- Strategy 1: component UUID intersection ----
+            }
+
+
+            // ---- Strategy 2: component UUID intersection ----
             var documentUuids = ExtractComponentUuidsFromFile(documentPath);
             if (documentUuids.Count > 0)
             {
                 ConsoleWriteLine($"  Document references {documentUuids.Count} component UUID(s): {string.Join(", ", documentUuids.OrderBy(p => p))}");
 
-                foreach (var kvp in renameMap)
+                var items = renameMap.Where(uu => documentUuids.Contains(uu.Code)).ToList();
+                foreach (var item in items)
                 {
-                    if (!System.IO.File.Exists(kvp.Value))
-                    {
-                        ConsoleWriteLine($"    ERROR: new file not found - cannot fix '{GetFileNameSafe(kvp.Key)}': {kvp.Value}");
-                        continue;
-                    }
-
-                    // The UUID field is comma-separated (products may have
-                    // multiple UUIDs).  Check if ANY of the part's UUIDs
-                    // intersects the document's UUID set.
-                    var partUuids = GetCachedUuids(kvp.Value);
-                    bool relevant = false;
-                    foreach (string uuid in partUuids)
-                    {
-                        if (documentUuids.Contains(uuid))
-                        {
-                            relevant = true;
-                            break;
-                        }
-                    }
-
-                    if (relevant)
-                    {
-                        result.Add(kvp);
-                        ConsoleWriteLine($"  Relevant: {GetFileNameSafe(kvp.Key)} (UUID match)");
-                    }
+                    result.Add(new KeyValuePair<string, string>(item.PartName, item.NewAddress));
                 }
-
                 if (result.Count > 0)
                     return result;
 
                 ConsoleWriteLine("  No UUID match - trying part-definition matching.");
             }
 
-            // ---- Strategy 2: part definition (part number) ----
-            string documentText = ReadAsciiTextFromFile(documentPath);
-            if (!string.IsNullOrEmpty(documentText))
-            {
-                foreach (var kvp in renameMap)
-                {
-                    if (!System.IO.File.Exists(kvp.Value))
-                    {
-                        ConsoleWriteLine($"    ERROR: new file not found - cannot fix '{GetFileNameSafe(kvp.Key)}': {kvp.Value}");
-                        continue;
-                    }
-
-                    bool alreadyAdded = false;
-                    foreach (var e in result)
-                    {
-                        if (string.Equals(e.Key, kvp.Key, StringComparison.OrdinalIgnoreCase))
-                        {
-                            alreadyAdded = true;
-                            break;
-                        }
-                    }
-                    if (alreadyAdded)
-                        continue;
-
-                    string definition = GetCachedPartDefinition(kvp.Value);
-                    if (string.IsNullOrEmpty(definition))
-                        continue;
-
-                    if (documentText.IndexOf(definition, StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        result.Add(kvp);
-                        ConsoleWriteLine($"  Relevant: {GetFileNameSafe(kvp.Key)} (part definition '{definition}' found in document)");
-                    }
-                }
-
-                if (result.Count > 0)
-                    return result;
-            }
 
             return result;
         }
@@ -730,7 +674,37 @@ namespace CatiaReferenceRename.WPFUI.Lib
         /// bridge between a product and its referenced parts before the
         /// product is opened.
         /// </summary>
+
         private static HashSet<string> ExtractComponentUuidsFromFile(string filePath)
+        {
+            var uuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrEmpty(filePath) || !System.IO.File.Exists(filePath))
+                return uuids;
+
+            byte[] bytes;
+            try { bytes = System.IO.File.ReadAllBytes(filePath); }
+            catch { return uuids; }
+
+            // Convert bytes using ISO-8859-1 to preserve all characters without replacement
+            string content = Encoding.GetEncoding(28591).GetString(bytes);
+
+            // UUID pattern: 2 letters + 2 digits + 2-4 letters + 0-2 alphanumeric.
+            // The trailing part is 0-2 chars (not strictly 2 digits) because some
+            // CATIA versions emit UUIDs like "BR10AAAA" (no trailing digits) while
+            // others use "DR01AAA01" (2 trailing digits).  The product's own UUID
+            // (e.g. "DR01AAA" / "BR10AAA") is only 7 chars, so the Length >= 8
+            // check below naturally excludes it, leaving only the component UUIDs.
+            var regex = new Regex(@"[a-zA-Z]{2}\d{2}[a-zA-Z]{2,4}[a-zA-Z0-9]{0,2}", RegexOptions.IgnoreCase);
+            foreach (Match match in regex.Matches(content))
+            {
+                string uuid = match.Value;
+                if (uuid.Length >= 8) // Ensure minimum length (excludes 7-char product UUID)
+                    uuids.Add(uuid.ToUpper()); // Normalize to uppercase for consistency
+            }
+
+            return uuids;
+        }
+        private static HashSet<string> ExtractComponentUuidsFromFileOLD(string filePath)
         {
             var uuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             if (string.IsNullOrEmpty(filePath) || !System.IO.File.Exists(filePath))
@@ -757,57 +731,16 @@ namespace CatiaReferenceRename.WPFUI.Lib
 
             return uuids;
         }
-
-        /// <summary>
-        /// Returns the cached UUIDs for a part file as a set, or reads them
-        /// from disk when the identity cache is empty or has no entry for this file.
-        ///
-        /// The UUID field in the database (and in the cache) is stored
-        /// comma-separated when a file contains multiple UUIDs (common for
-        /// CATProduct files).  This method splits on commas and returns every
-        /// UUID as a set so the caller can check intersection with the
-        /// document's UUID set.
-        /// </summary>
-        private static HashSet<string> GetCachedUuids(string partFilePath)
+        private static bool IsValidUuidFormat(string value)
         {
-            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            // Additional validation to ensure it's a proper UUID-like format
+            if (value.Length < 8) return false;
 
-            if (_identityCache != null && !_identityCache.IsEmpty)
-            {
-                CatiaPartIdentity identity = _identityCache.Get(partFilePath);
-                if (identity != null && !string.IsNullOrWhiteSpace(identity.Uuid))
-                {
-                    foreach (string u in identity.Uuid.Split(','))
-                        if (!string.IsNullOrWhiteSpace(u))
-                            result.Add(u.Trim());
-                }
-                return result;
-            }
-
-            // Fallback: read from disk.
-            foreach (string u in ExtractComponentUuidsFromFile(partFilePath))
-                result.Add(u);
-
-            return result;
+            // Check that it has the right structure
+            var match = System.Text.RegularExpressions.Regex.Match(value, @"^[A-Z]{2}[0-9]{2}[A-Z]{2,3}[0-9]{2}$");
+            return match.Success;
         }
 
-        /// <summary>
-        /// Returns the cached part definition for a part file, or reads it from
-        /// disk when the identity cache is empty or has no entry for this file.
-        /// </summary>
-        private static string GetCachedPartDefinition(string partFilePath)
-        {
-            if (_identityCache != null && !_identityCache.IsEmpty)
-            {
-                CatiaPartIdentity identity = _identityCache.Get(partFilePath);
-                if (identity != null)
-                    return identity.PartDefinition;
-                return null;
-            }
-
-            // Fallback: read from disk.
-            return ExtractPartDefinitionFromFile(partFilePath);
-        }
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern bool CreateHardLink(
@@ -826,7 +759,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
         /// </summary>
         private static void ReplaceReferencesInProduct(
             Product currentProduct,
-            Dictionary<string, string> renameMap,
+            List<PartNewRef> renameMap,
             HashSet<string> replacedPaths,
             List<string> convertedItems,
             List<string> documentsToClose,
@@ -869,9 +802,9 @@ namespace CatiaReferenceRename.WPFUI.Lib
             }
 
             var knownNewPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (string value in renameMap.Values)
+            foreach (var value in renameMap)
             {
-                knownNewPaths.Add(NormalizePath(value));
+                knownNewPaths.Add(NormalizePath(value.NewAddress));
             }
 
             for (int i = 1; i <= count; i++)
@@ -916,7 +849,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
                     string matchingKey = FindMatchingKeyForFile(currentFile, renameMap);
                     if (matchingKey != null)
                     {
-                        string newPath = renameMap[matchingKey];
+                        string newPath = renameMap.FirstOrDefault(uu=>uu.PartName==matchingKey).NewAddress;
 
                         if (string.Equals(NormalizePath(currentFile), NormalizePath(newPath),
                                 StringComparison.OrdinalIgnoreCase))
@@ -1119,7 +1052,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
         /// </summary>
         private static string FindMatchingKeyForFile(
             string currentFile,
-            Dictionary<string, string> renameMap)
+            List<PartNewRef> renameMap)
         {
             if (string.IsNullOrWhiteSpace(currentFile)) return null;
 
@@ -1128,26 +1061,26 @@ namespace CatiaReferenceRename.WPFUI.Lib
             string baseName = Path.GetFileNameWithoutExtension(fileName);
 
             // 1) exact full-path match
-            foreach (string key in renameMap.Keys)
+            foreach (var key in renameMap)
             {
-                if (string.Equals(NormalizePath(key), normalizedFile, StringComparison.OrdinalIgnoreCase))
-                    return key;
+                if (string.Equals(NormalizePath(key.PartName), normalizedFile, StringComparison.OrdinalIgnoreCase))
+                    return key.PartName;
             }
 
             // 2) file name match (with extension)
-            foreach (string key in renameMap.Keys)
+            foreach (var key in renameMap)
             {
-                if (string.Equals(GetFileNameSafe(key), fileName, StringComparison.OrdinalIgnoreCase))
-                    return key;
+                if (string.Equals(GetFileNameSafe(key.PartName), fileName, StringComparison.OrdinalIgnoreCase))
+                    return key.PartName;
             }
 
             // 3) base name match (ignores a differing extension casing/suffix)
-            foreach (string key in renameMap.Keys)
+            foreach (var key in renameMap)
             {
-                string keyBase = Path.GetFileNameWithoutExtension(GetFileNameSafe(key));
+                string keyBase = Path.GetFileNameWithoutExtension(GetFileNameSafe(key.PartName));
                 if (!string.IsNullOrEmpty(keyBase) &&
                     string.Equals(keyBase, baseName, StringComparison.OrdinalIgnoreCase))
-                    return key;
+                    return key.PartName;
             }
 
             return null;
@@ -1195,7 +1128,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
         /// </summary>
         private static void ProcessDrawing(
             string drawingPath,
-            Dictionary<string, string> renameMap,
+            List<PartNewRef> renameMap,
             List<string> convertedItems,
             List<string> newAssembliesFound)
         {
@@ -1595,7 +1528,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
         /// </summary>
         private static List<DrawingLinkFix> BuildDrawingLinkFixes(
             string drawingPath,
-            Dictionary<string, string> renameMap)
+            List<PartNewRef> renameMap)
         {
             var fixes = new List<DrawingLinkFix>();
 
@@ -1613,7 +1546,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
 
                 foreach (var kvp in renameMap)
                 {
-                    string oldFileName = GetFileNameSafe(kvp.Key);
+                    string oldFileName = GetFileNameSafe(kvp.PartName);
                     string oldBaseName = Path.GetFileNameWithoutExtension(oldFileName);
                     if (string.IsNullOrWhiteSpace(oldBaseName)) continue;
 
@@ -1621,8 +1554,8 @@ namespace CatiaReferenceRename.WPFUI.Lib
                         drawingBaseName.IndexOf(oldBaseName + "-", StringComparison.OrdinalIgnoreCase) >= 0 ||
                         string.Equals(drawingBaseName, oldBaseName, StringComparison.OrdinalIgnoreCase);
 
-                    if (matchesConvention && System.IO.File.Exists(kvp.Value))
-                        relevantEntries.Add(kvp);
+                    if (matchesConvention && System.IO.File.Exists(kvp.NewAddress))
+                        relevantEntries.Add(new KeyValuePair<string, string>(kvp.PartName, kvp.NewAddress));
                 }
             }
 

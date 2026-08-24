@@ -106,7 +106,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                             OnNumberOfAssembliesChanged(this, allAssemblies.Count);
 
 
-                        var partDict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        var partDict = new List<PartNewRef>();
                         List<DocFileView> allParts;
                         if (softwareType == SoftwareType.Solid)
                         {
@@ -144,24 +144,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                         if (OnNumberOfPartsChanged != null)
                             OnNumberOfPartsChanged(this, allParts.Count);
 
-                        // Build the CATIA identity cache from the DB.  The
-                        // UUIDs are assumed to be pre-filled (via
-                        // FillSiteUUID).  No file reads are needed here.
-                        var identityCache = new CatiaPartIdentityCache();
-                        foreach (var part in allParts)
-                        {
-                            if (string.IsNullOrWhiteSpace(part.DestinationFileAddress))
-                                continue;
-
-                            identityCache.Add(new CatiaPartIdentity
-                            {
-                                FilePath = part.DestinationFileAddress,
-                                Uuid = part.UUID,
-                                PartDefinition = part.CatiaPartDefinition
-                            });
-                        }
-
-                        Console.WriteLine($"Identity cache: {identityCache.Count} entries.");
+                      
                         List<DocFileView> allDrawings;
                         if ((extensionTypes & FileExtensionTypes.Drawing) == FileExtensionTypes.Drawing && softwareType == SoftwareType.Solid)
                         {
@@ -186,7 +169,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                             {
                                 allDrawings = await context.DocFileViews
                                 .Where(uu => uu.EXTENSION.ToUpper() == "CATDRAWING" &&
-                                uu.SourceDbCode.ToUpper().Contains(site.ToUpper())).ToListAsync();
+                                uu.SourceDbCode.ToUpper() == site.ToUpper()).ToListAsync();
                             }
 
                         }
@@ -211,18 +194,18 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                             foreach (var part in allParts)
                             {
                                 string partName = $"{part.SourceFileName}.{part.EXTENSION}".ToUpper().Trim();
-                                if (!partDict.ContainsKey(partName))
+                                if (!partDict.Any(uu => uu.PartName == partName))
                                 {
                                     if (!string.IsNullOrWhiteSpace(part.DestinationFileAddress))
                                     {
                                         if (string.IsNullOrWhiteSpace(replaceAllFolderAddressWith))
                                         {
-                                            partDict.Add(partName, part.DestinationFileAddress);
+                                            partDict.Add(new PartNewRef(partName, part.DestinationFileAddress, part.CODE.Trim()));
                                         }
                                         else
                                         {
                                             var fileName = Path.GetFileName(part.DestinationFileAddress);
-                                            partDict.Add(partName, part.DestinationFileAddress.Replace(patternToMatchAllFolderAddressWith, replaceAllFolderAddressWith));
+                                            partDict.Add(new PartNewRef(partName, part.DestinationFileAddress.Replace(patternToMatchAllFolderAddressWith, replaceAllFolderAddressWith), part.CODE.Trim()));
                                         }
                                     }
                                     else
@@ -296,7 +279,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                             }
                             else
                             {
-                                g = CatiaUtils.ChangePartAddress(currentAssemblyPath, partDict, identityCache);
+                                g = CatiaUtils.ChangePartAddress(currentAssemblyPath, partDict);
                             }
                             Application.Current.Dispatcher.Invoke(() =>
                             {
@@ -341,7 +324,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
 
         }
 
-        public async Task CatiaTest(string targetFile = null, Dictionary<string, string> sourceFiles = null)
+        public async Task CatiaTest(string targetFile = null, List<PartNewRef> sourceFiles = null)
         {
             IsRunning = true;
             if (targetFile == null)
@@ -350,11 +333,11 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
             }
             if (sourceFiles == null)
             {
-                sourceFiles = new Dictionary<string, string>()
-                    {
-                        { "Part1.CATPart","D:\\catia\\PIC AFTER\\1405-Part1-F1.CATPart" },
-                        { "Part2.CATPart","D:\\catia\\PIC AFTER\\1405-Part2-F2.CATPart" }
-                    };
+                sourceFiles = new List<PartNewRef>();
+
+                sourceFiles.Add(new PartNewRef() { PartName = "Part1.CATPart", NewAddress = "D:\\catia\\PIC AFTER\\1405-Part1-F1.CATPart", Code = "Part1" });
+                sourceFiles.Add(new PartNewRef(){ PartName=  "Part2.CATPart",NewAddress="D:\\catia\\PIC AFTER\\1405-Part2-F2.CATPart" ,Code="Part2" });
+                   
             }
             PartChangingOutput g = CatiaUtils.ChangePartAddress(targetFile, sourceFiles);
             IsRunning = false;

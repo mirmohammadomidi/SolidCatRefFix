@@ -14,6 +14,8 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
 using System.Windows.Shapes;
+using CatiaReferenceRename.WPFUI.Lib;
+using Microsoft.Win32;
 
 namespace SolidRefrenceRename.WPFUI
 {
@@ -120,7 +122,7 @@ namespace SolidRefrenceRename.WPFUI
             try
             {
                 string targetFile = null;
-                Dictionary<string, string> fileNamesToInclude = new Dictionary<string, string>();
+                List<PartNewRef> fileNamesToInclude = new List<PartNewRef>();
                 if (!string.IsNullOrWhiteSpace(txbCatiaTargetFile.Text))
                 {
                     targetFile = txbCatiaTargetFile.Text;
@@ -133,11 +135,12 @@ namespace SolidRefrenceRename.WPFUI
                         if (!string.IsNullOrWhiteSpace(h))
                         {
                             var parts = h.Trim().Split(';');
-                            if (parts.Length > 1)
+                            if (parts.Length > 2)
                             {
                                 var name = parts[0].Trim();
                                 var newAddress = parts[1].Trim();
-                                fileNamesToInclude.Add(name, newAddress);
+                                var code = parts[2].Trim();
+                                fileNamesToInclude.Add(new PartNewRef(name, newAddress, code));
                             }
                         }
                     }
@@ -174,7 +177,7 @@ namespace SolidRefrenceRename.WPFUI
                     fileNamesToInclude = txbJustInclude.Text.Split(',').ToList();
                 }
                 var site = ((ComboBoxItem)cmbSites.SelectedItem)?.Content?.ToString() ?? "All Sites";
-                await ViewModel.StartFixing(Lib.SoftwareType.Catia, fileNamesToInclude, basePattern, patternReplace,Lib.FileExtensionTypes.Drawing, site);
+                await ViewModel.StartFixing(Lib.SoftwareType.Catia, fileNamesToInclude, basePattern, patternReplace, Lib.FileExtensionTypes.Drawing, site);
             }
             finally
             {
@@ -195,6 +198,43 @@ namespace SolidRefrenceRename.WPFUI
             {
                 ViewModel.IsRunning = false;
             }
+        }
+
+
+
+
+        private void miGetComponentUUIDsOfProduct_Click(object sender, RoutedEventArgs e)
+        {
+            OpenFileDialog openFile = new OpenFileDialog();
+            openFile.Filter = "CatProduct Files (*.catproduct)|*.catproduct|All Files (*.*)|*.*";
+            if (openFile.ShowDialog() == true)
+            {
+                HashSet<string> parts = CatiaUtils.ExtractComponentUuidsFromPath(openFile.FileName);
+                MessageBox.Show(string.Join(" | ", parts));
+            }
+        }
+
+        private void miGetPartUUIDFromFile_Click(object sender, RoutedEventArgs e)
+        {
+            OpenFileDialog openFile = new OpenFileDialog();
+            openFile.Filter = "CatPart Files (*.catpart)|*.catpart|All Files (*.*)|*.*";
+            if (openFile.ShowDialog() == true)
+            {
+                HashSet<string> parts = CatiaUtils.ExtractComponentUuidsFromPath(openFile.FileName);
+                MessageBox.Show(string.Join(" | ", parts));
+            }
+        }
+
+        private void miGetPartCodeFromFile_Click(object sender, RoutedEventArgs e)
+        {
+            OpenFileDialog openFile = new OpenFileDialog();
+            openFile.Filter = "CatPart Files (*.catpart)|*.catpart|All Files (*.*)|*.*";
+            if (openFile.ShowDialog() == true)
+            {
+                string parts = CatiaUtils.ExtractPartDefinitionFromPath(openFile.FileName);
+                MessageBox.Show(parts);
+            }
+
         }
     }
 }
