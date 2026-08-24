@@ -599,14 +599,16 @@ namespace CatiaReferenceRename.WPFUI.Lib
             if (documentUuids.Count > 0)
             {
                 ConsoleWriteLine($"  Document references {documentUuids.Count} component UUID(s): {string.Join(", ", documentUuids.OrderBy(p => p))}");
-
-                var items = renameMap.Where(uu => documentUuids.Contains(uu.Code)).ToList();
-                foreach (var item in items)
+                if (renameMap.Any(uu => documentUuids.Contains(uu.Code)))
                 {
-                    result.Add(new KeyValuePair<string, string>(item.PartName, item.NewAddress));
+                    var items = renameMap.Where(uu => documentUuids.Contains(uu.Code)).ToList();
+                    foreach (var item in items)
+                    {
+                        result.Add(new KeyValuePair<string, string>(item.PartName, item.NewAddress));
+                    }
+                    if (result.Count > 0)
+                        return result;
                 }
-                if (result.Count > 0)
-                    return result;
 
                 ConsoleWriteLine("  No UUID match - trying part-definition matching.");
             }
@@ -732,15 +734,27 @@ namespace CatiaReferenceRename.WPFUI.Lib
             // UUID pattern: 2 letters + 2 digits + 2-4 letters + 0-2 alphanumeric.
             // The trailing part is 0-2 chars (not strictly 2 digits) because some
             // CATIA versions emit UUIDs like "BR10AAAA" (no trailing digits) while
-            // others use "DR01AAA01" (2 trailing digits).  The product's own UUID
-            // (e.g. "DR01AAA" / "BR10AAA") is only 7 chars, so the Length >= 8
-            // check below naturally excludes it, leaving only the component UUIDs.
+            // others use "DR01AAA01" (2 trailing digits).  We include the 7-char
+            // product UUID (e.g. "BR19AAA", "DR01AAA") because some save formats
+            // store only that form — without it, those files yield no matches.
             var regex = new Regex(@"[a-zA-Z]{2}\d{2}[a-zA-Z]{2,4}[a-zA-Z0-9]{0,2}", RegexOptions.IgnoreCase);
             foreach (Match match in regex.Matches(content))
             {
                 string uuid = match.Value;
-                if (uuid.Length >= 8) // Ensure minimum length (excludes 7-char product UUID)
+                if (uuid.Length >= 7)
                     uuids.Add(uuid.ToUpper()); // Normalize to uppercase for consistency
+            }
+
+            // ---- Strategy 3: MZ10G component identifiers ----
+            // Some CATIA save formats (e.g. 3DExperience/ENOVIA-managed) store
+            // component identifiers as "MZ10G" + alphanumeric, e.g. "MZ10G46937A11".
+            // These appear in the binary section and are the only component UUIDs
+            // available when the ASMPRODUCT tree uses instance names (Product3,
+            // Board) instead of UUIDs in the _Reps field.
+            var mzRegex = new Regex(@"MZ10G[A-Za-z0-9]{5,15}", RegexOptions.IgnoreCase);
+            foreach (Match match in mzRegex.Matches(content))
+            {
+                uuids.Add(match.Value.ToUpper());
             }
 
             return uuids;
