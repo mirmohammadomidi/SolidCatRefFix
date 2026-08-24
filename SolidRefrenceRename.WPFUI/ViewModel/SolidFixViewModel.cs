@@ -70,7 +70,9 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                             }
                             else
                             {
-                                allAssemblies = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "SLDASM" && uu.SourceDbCode.ToUpper().Contains(site.ToUpper())).ToListAsync();
+                                allAssemblies = await context.DocFileViews
+                                .Where(uu => uu.EXTENSION.ToUpper() == "SLDASM" && uu.SourceDbCode.ToUpper().Contains(site.ToUpper()))
+                                .ToListAsync();
                             }
 
                         }
@@ -82,7 +84,9 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                             }
                             else
                             {
-                                allAssemblies = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATPRODUCT" && uu.SourceDbCode.ToUpper().Contains(site.ToUpper())).ToListAsync();
+                                allAssemblies = await context.DocFileViews
+                                .Where(uu => uu.EXTENSION.ToUpper() == "CATPRODUCT" && uu.SourceDbCode.ToUpper().Contains(site.ToUpper()))
+                                .ToListAsync();
                             }
                         }
                         else
@@ -106,11 +110,32 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                         List<DocFileView> allParts;
                         if (softwareType == SoftwareType.Solid)
                         {
-                            allParts = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "SLDPRT" || ((extensionTypes & FileExtensionTypes.Assembly) == FileExtensionTypes.Assembly && uu.EXTENSION.ToUpper() == "SLDASM")).ToListAsync();
+                            if (allSites)
+                            {
+                                allParts = await context.DocFileViews
+                                .Where(uu => uu.EXTENSION.ToUpper() == "SLDPRT" || uu.EXTENSION.ToUpper() == "SLDASM")
+                                .ToListAsync();
+                            }
+                            else
+                            {
+                                allParts = await context.DocFileViews
+                               .Where(uu => (uu.EXTENSION.ToUpper() == "SLDPRT" || uu.EXTENSION.ToUpper() == "SLDASM") && uu.SourceDbCode.ToUpper().Contains(site.ToUpper()))
+                               .ToListAsync();
+                            }
                         }
                         else if (softwareType == SoftwareType.Catia)
                         {
-                            allParts = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATPART" || ((extensionTypes & FileExtensionTypes.Assembly) == FileExtensionTypes.Assembly && uu.EXTENSION.ToUpper() == "CATPRODUCT")).ToListAsync();
+                            if (allSites)
+                            {
+                                allParts = await context.DocFileViews
+                            .Where(uu => uu.EXTENSION.ToUpper() == "CATPART" || uu.EXTENSION.ToUpper() == "CATPRODUCT").ToListAsync();
+                            }
+                            else
+                            {
+                                allParts = await context.DocFileViews
+                               .Where(uu => (uu.EXTENSION.ToUpper() == "CATPART" || uu.EXTENSION.ToUpper() == "CATPRODUCT") && uu.SourceDbCode.ToUpper().Contains(site.ToUpper()))
+                               .ToListAsync();
+                            }
                         }
                         else
                         {
@@ -146,7 +171,9 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                             }
                             else
                             {
-                                allDrawings = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "SLDDRW" && uu.SourceDbCode.ToUpper().Contains(site.ToUpper())).ToListAsync();
+                                allDrawings = await context.DocFileViews
+                                .Where(uu => uu.EXTENSION.ToUpper() == "SLDDRW" &&
+                                    uu.SourceDbCode.ToUpper().Contains(site.ToUpper())).ToListAsync();
                             }
                         }
                         else if ((extensionTypes & FileExtensionTypes.Drawing) == FileExtensionTypes.Drawing && softwareType == SoftwareType.Catia)
@@ -157,7 +184,9 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                             }
                             else
                             {
-                                allDrawings = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATDRAWING" && uu.SourceDbCode.ToUpper().Contains(site.ToUpper())).ToListAsync();
+                                allDrawings = await context.DocFileViews
+                                .Where(uu => uu.EXTENSION.ToUpper() == "CATDRAWING" &&
+                                uu.SourceDbCode.ToUpper().Contains(site.ToUpper())).ToListAsync();
                             }
 
                         }
@@ -263,7 +292,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                             PartChangingOutput g = null;
                             if (softwareType == SoftwareType.Solid)
                             {
-                                 //g = SolidUtils.ChangePartAddress(currentAssemblyPath, partDict);
+                                //g = SolidUtils.ChangePartAddress(currentAssemblyPath, partDict);
                             }
                             else
                             {
