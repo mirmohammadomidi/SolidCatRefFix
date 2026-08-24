@@ -14,6 +14,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using static System.Net.WebRequestMethods;
+using System.Security.Cryptography;
 
 namespace CatiaReferenceRename.WPFUI.Lib
 {
@@ -685,8 +686,48 @@ namespace CatiaReferenceRename.WPFUI.Lib
             try { bytes = System.IO.File.ReadAllBytes(filePath); }
             catch { return uuids; }
 
-            // Convert bytes using ISO-8859-1 to preserve all characters without replacement
-            string content = Encoding.GetEncoding(28591).GetString(bytes);
+            // ---- Strategy 1: RootNode binary parsing ----
+            // CATProduct files store the component identifiers in a "RootNode"
+            // section.  The format is:
+            //   "RootNode" (8 bytes)
+            //   [1-byte length = N+1][N-byte identifier]  (repeated per component)
+            //   0x4D ('M')  end marker
+            // The identifiers can be UUIDs (DR01AAA01) or part names
+            // (SELMPAR33A, PCB_AllCATPart) depending on the CATIA version.
+            // The length byte is always identifier_length + 1 (the +1 accounts
+            // for a null terminator that is not stored in the file).
+            int rootIdx = IndexOfBytes(bytes, RootNodeMarker, 0);
+            if (rootIdx >= 0)
+            {
+                int pos = rootIdx + RootNodeMarker.Length;
+                while (pos < bytes.Length)
+                {
+                    byte len = bytes[pos];
+                    // Valid component identifiers are 2-30 chars.  The end
+                    // marker 0x4D (77) and other large values stop the scan.
+                    if (len < 2 || len > 31)
+                        break;
+                    int strLen = len - 1;
+                    if (pos + 1 + strLen > bytes.Length)
+                        break;
+                    string id = System.Text.Encoding.ASCII.GetString(bytes, pos + 1, strLen);
+                    if (!string.IsNullOrEmpty(id))
+                        uuids.Add(id.ToUpper());
+                    pos += 1 + strLen;
+                }
+            }
+
+            // ---- Strategy 2: UUID regex scan (fallback / supplement) ----
+            // Convert bytes to a char array manually, one char per byte.  This
+            // avoids any dependency on Encoding classes, which can behave
+            // differently across machines / .NET runtimes (e.g. code page 28591
+            // not registered → multi-byte fallback → shorter string → regex
+            // misses UUIDs).  Manual byte-to-char cast is guaranteed to produce
+            // content.Length == bytes.Length everywhere.
+            var chars = new char[bytes.Length];
+            for (int i = 0; i < bytes.Length; i++)
+                chars[i] = (char)bytes[i];
+            string content = new string(chars);
 
             // UUID pattern: 2 letters + 2 digits + 2-4 letters + 0-2 alphanumeric.
             // The trailing part is 0-2 chars (not strictly 2 digits) because some
@@ -704,6 +745,52 @@ namespace CatiaReferenceRename.WPFUI.Lib
 
             return uuids;
         }
+
+        /// <summary>
+        /// Byte sequence for "RootNode" — the CATProduct section that lists
+        /// all referenced component identifiers.
+        /// </summary>
+        private static readonly byte[] RootNodeMarker =
+            System.Text.Encoding.ASCII.GetBytes("RootNode");
+
+        /// <summary>
+        /// Finds the first occurrence of <paramref name="pattern"/> in
+        /// <paramref name="buffer"/> starting at <paramref name="startIndex"/>.
+        /// Returns the index, or -1 if not found.
+        /// </summary>
+        private static int IndexOfBytes(byte[] buffer, byte[] pattern, int startIndex)
+        {
+            if (buffer == null || pattern == null || pattern.Length == 0)
+                return -1;
+            for (int i = startIndex; i <= buffer.Length - pattern.Length; i++)
+            {
+                bool match = true;
+                for (int j = 0; j < pattern.Length; j++)
+                {
+                    if (buffer[i + j] != pattern[j])
+                    {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match)
+                    return i;
+            }
+            return -1;
+        }
+
+
+
+
+        private static string GetSha256(byte[] bytes)
+        {
+            using (var sha = SHA256.Create())
+            {
+                return BitConverter.ToString(sha.ComputeHash(bytes))
+                    .Replace("-", "");
+            }
+        }
+
         private static HashSet<string> ExtractComponentUuidsFromFileOLD(string filePath)
         {
             var uuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -849,7 +936,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
                     string matchingKey = FindMatchingKeyForFile(currentFile, renameMap);
                     if (matchingKey != null)
                     {
-                        string newPath = renameMap.FirstOrDefault(uu=>uu.PartName==matchingKey).NewAddress;
+                        string newPath = renameMap.FirstOrDefault(uu => uu.PartName == matchingKey).NewAddress;
 
                         if (string.Equals(NormalizePath(currentFile), NormalizePath(newPath),
                                 StringComparison.OrdinalIgnoreCase))
