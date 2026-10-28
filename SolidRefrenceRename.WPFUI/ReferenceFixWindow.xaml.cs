@@ -20,15 +20,15 @@ using Microsoft.Win32;
 namespace SolidRefrenceRename.WPFUI
 {
     /// <summary>
-    /// Interaction logic for MainWindow.xaml
+    /// Interaction logic for ReferenceFixWindow.xaml
     /// </summary>
-    public partial class MainWindow : Window
+    public partial class ReferenceFixWindow : Window
     {
         private int _totalNumberOfParts;
         private int _totalNumberOfAssemblies;
         private int _totalNumberOfDrawings;
         public SolidFixViewModel ViewModel => (SolidFixViewModel)this.DataContext;
-        public MainWindow()
+        public ReferenceFixWindow()
         {
             DataContext = new SolidFixViewModel();
             InitializeComponent();

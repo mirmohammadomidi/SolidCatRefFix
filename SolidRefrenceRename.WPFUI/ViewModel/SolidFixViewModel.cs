@@ -33,6 +33,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
         public SolidFixViewModel()
         {
             CatiaUtils.LogErrors += CatiaUtils_LogErrors;
+            CatiaUtils.BatchProductProgress += CatiaUtils_BatchProductProgress;
         }
 
         private void CatiaUtils_LogErrors(object sender, string e)
@@ -40,6 +41,14 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
             if (EventLogged != null)
             {
                 EventLogged(sender, e);
+            }
+        }
+
+        private void CatiaUtils_BatchProductProgress(object sender, (int index, string productPath) e)
+        {
+            if (OnItemBeingFixed != null)
+            {
+                OnItemBeingFixed(this, (e.index, e.productPath));
             }
         }
 
@@ -322,6 +331,176 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                 }
             }
 
+        }
+
+        /// <summary>
+        /// Batch processing of CATProduct files only.
+        ///
+        /// Unlike <see cref="StartFixing"/> (which processes the assemblies
+        /// one by one, each with its own staging and cleanup), this method
+        /// collects ALL CATProduct files for the site, builds ONE shared
+        /// rename map and hands the whole batch to
+        /// <see cref="CatiaUtils.ChangePartAddressesBatch"/>, which stages
+        /// every replacement file once, keeps the staged documents open and
+        /// removes the staged files only after the last product is done.
+        /// </summary>
+        public async Task StartFixingCatiaProductsBatch(
+            List<string> fileNamesToInclude = null,
+            string patternToMatchAllFolderAddressWith = null,
+            string replaceAllFolderAddressWith = null,
+            string site = "All Sites")
+        {
+            bool allSites = site.ToLower().Contains("all");
+            Errors.Clear();
+            using (var context = new IFSCodeCleansingDBContext(App.DefaultConnectionString))
+            {
+                try
+                {
+                    await Task.Run(async () =>
+                    {
+                        // -------------------------------------------------
+                        // 1-  All CATProduct files for the site.
+                        // -------------------------------------------------
+                        List<DocFileView> allAssemblies;
+                        if (allSites)
+                        {
+                            allAssemblies = await context.DocFileViews
+                                .Where(uu => uu.EXTENSION.ToUpper() == "CATPRODUCT").ToListAsync();
+                        }
+                        else
+                        {
+                            allAssemblies = await context.DocFileViews
+                                .Where(uu => uu.EXTENSION.ToUpper() == "CATPRODUCT" &&
+                                             uu.SourceDbCode.ToUpper().Contains(site.ToUpper()))
+                                .ToListAsync();
+                        }
+
+                        if (fileNamesToInclude != null && fileNamesToInclude.Any())
+                        {
+                            List<string> fileNamesToIncludeNormalized = new List<string>();
+                            foreach (var file in fileNamesToInclude)
+                            {
+                                fileNamesToIncludeNormalized.Add(file.ToUpper().Trim());
+                            }
+                            allAssemblies = allAssemblies
+                                .Where(uu => fileNamesToIncludeNormalized.Contains(uu.FileName.ToUpper())).ToList();
+                        }
+
+                        if (OnNumberOfAssembliesChanged != null)
+                            OnNumberOfAssembliesChanged(this, allAssemblies.Count);
+
+                        // -------------------------------------------------
+                        // 2-  All CATPart + CATProduct rows -> shared rename map
+                        //     (same logic as StartFixing).
+                        // -------------------------------------------------
+                        List<DocFileView> allParts;
+                        if (allSites)
+                        {
+                            allParts = await context.DocFileViews
+                                .Where(uu => uu.EXTENSION.ToUpper() == "CATPART" || uu.EXTENSION.ToUpper() == "CATPRODUCT")
+                                .ToListAsync();
+                        }
+                        else
+                        {
+                            allParts = await context.DocFileViews
+                                .Where(uu => (uu.EXTENSION.ToUpper() == "CATPART" || uu.EXTENSION.ToUpper() == "CATPRODUCT") &&
+                                             uu.SourceDbCode.ToUpper().Contains(site.ToUpper()))
+                                .ToListAsync();
+                        }
+
+                        if (OnNumberOfPartsChanged != null)
+                            OnNumberOfPartsChanged(this, allParts.Count);
+
+                        var partDict = new List<PartNewRef>();
+                        try
+                        {
+                            foreach (var part in allParts)
+                            {
+                                string partName = $"{part.SourceFileName}.{part.EXTENSION}".ToUpper().Trim();
+                                if (!partDict.Any(uu => uu.PartName == partName))
+                                {
+                                    if (!string.IsNullOrWhiteSpace(part.DestinationFileAddress))
+                                    {
+                                        if (string.IsNullOrWhiteSpace(replaceAllFolderAddressWith))
+                                        {
+                                            partDict.Add(new PartNewRef(partName, part.DestinationFileAddress, part.CODE.Trim()));
+                                        }
+                                        else
+                                        {
+                                            partDict.Add(new PartNewRef(
+                                                partName,
+                                                part.DestinationFileAddress.Replace(patternToMatchAllFolderAddressWith, replaceAllFolderAddressWith),
+                                                part.CODE.Trim()));
+                                        }
+                                    }
+                                    else
+                                    {
+                                        Application.Current.Dispatcher.Invoke(() =>
+                                        {
+                                            var errorStr = $"Part does not have address in DB";
+                                            Console.WriteLine(errorStr);
+                                            Errors.Add(new ProcessOutputDetails(errorStr)
+                                            {
+                                                PartName = partName,
+                                            });
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Application.Current.Dispatcher.Invoke(() =>
+                            {
+                                var errorStr = ex.Message;
+                                Console.WriteLine(errorStr);
+                                Errors.Add(new ProcessOutputDetails(errorStr));
+                            });
+                        }
+
+                        // -------------------------------------------------
+                        // 3-  The product paths to process.
+                        // -------------------------------------------------
+                        List<string> productPaths;
+                        if (string.IsNullOrWhiteSpace(replaceAllFolderAddressWith))
+                        {
+                            productPaths = allAssemblies.Select(uu => uu.DestinationFileAddress).ToList();
+                        }
+                        else
+                        {
+                            productPaths = allAssemblies
+                                .Select(uu => uu.DestinationFileAddress.Replace(patternToMatchAllFolderAddressWith, replaceAllFolderAddressWith))
+                                .ToList();
+                        }
+
+                        // -------------------------------------------------
+                        // 4-  Run the batch.
+                        // -------------------------------------------------
+                        PartChangingOutput g = CatiaUtils.ChangePartAddressesBatch(productPaths, partDict);
+
+                        Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            foreach (var error in g.Errors)
+                            {
+                                Errors.Add(error);
+                            }
+                        });
+                    });
+                }
+                catch (Exception ex)
+                {
+                    var errorStr = $"Error reading parts: {ex.Message}";
+                    Console.WriteLine(errorStr);
+                    Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        Errors.Add(new ProcessOutputDetails(errorStr));
+                    });
+                }
+                finally
+                {
+                    CatiaUtils.DoCleanUp();
+                }
+            }
         }
 
         public async Task CatiaTest(string targetFile = null, List<PartNewRef> sourceFiles = null)

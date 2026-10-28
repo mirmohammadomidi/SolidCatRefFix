@@ -18,7 +18,7 @@ using System.Security.Cryptography;
 
 namespace CatiaReferenceRename.WPFUI.Lib
 {
-    public class CatiaUtils
+    public partial class CatiaUtils
     {
         private static INFITF.Application catiaApp;
         private static ProductDocument productDoc;

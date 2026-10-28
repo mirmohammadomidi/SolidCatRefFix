@@ -125,10 +125,19 @@
     <Compile Include="Lib\PartNewRef.cs" />
     <Compile Include="Lib\SoftwareType.cs" />
     <Compile Include="Lib\CatiaUtils.cs" />
+    <Compile Include="Lib\CatiaUtils.BatchProducts.cs" />
     <Compile Include="Lib\CatiaPartIdentity.cs" />
     <Compile Include="Models\ProcessOutputDetails.cs" />
     <Compile Include="ViewModel\SolidFixViewModel.cs" />
     <Page Include="MainWindow.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="ReferenceFixWindow.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="BatchProductWindow.xaml">
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </Page>
@@ -140,6 +149,14 @@
     <Compile Include="Data\IFSCodeCleansingDBContext.cs" />
     <Compile Include="MainWindow.xaml.cs">
       <DependentUpon>MainWindow.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="ReferenceFixWindow.xaml.cs">
+      <DependentUpon>ReferenceFixWindow.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="BatchProductWindow.xaml.cs">
+      <DependentUpon>BatchProductWindow.xaml</DependentUpon>
       <SubType>Code</SubType>
     </Compile>
   </ItemGroup>
