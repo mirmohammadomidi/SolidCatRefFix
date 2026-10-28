@@ -22,6 +22,7 @@
             <RowDefinition Height="30"/>
             <RowDefinition Height="30"/>
             <RowDefinition Height="10"/>
+            <RowDefinition Height="110"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="10"/>
         </Grid.RowDefinitions>
@@ -106,8 +107,14 @@
             <Label x:Name="lblCurrent" Padding="10 5 10 0" Content="-"/>
         </StackPanel>
         <ProgressBar Grid.Row="7"  x:Name="prBar"/>
+        <!-- LIVE LOG: always visible, shows the most recent activity -->
+        <ListBox x:Name="lstLiveLog" Grid.Row="8"
+                 ItemsSource="{Binding LiveLog}"
+                 FontFamily="Consolas" FontSize="11" Margin="5 2 5 2"
+                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                 VirtualizingPanel.ScrollUnit="Pixel"/>
         <!-- ERROR GRID -->
-        <TabControl Grid.Row="8" SelectedItem="tiErrors">
+        <TabControl Grid.Row="9" SelectedItem="tiErrors">
             <TabItem x:Name="tiErrors" Header="Errors">
                 <DataGrid Grid.Row="8"
           ItemsSource="{Binding Errors}"

@@ -2,6 +2,7 @@
 using SolidRefrenceRename.WPFUI.Lib;
 using System;
 using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -37,6 +38,17 @@ namespace SolidRefrenceRename.WPFUI
             ViewModel.OnNumberOfDrawingsChanged += ViewModel_OnNumberOfDrawingsChanged;
             ViewModel.OnItemBeingFixed += ViewModel_OnItemBeingFixed;
             ViewModel.EventLogged += ViewModel_EventLogged;
+            ViewModel.LiveLog.CollectionChanged += LiveLog_CollectionChanged;
+        }
+
+        /// <summary>
+        /// Keeps the live log scrolled to the newest line so the user always
+        /// sees what the process is currently doing.
+        /// </summary>
+        private void LiveLog_CollectionChanged(object sender, NotifyCollectionChangedEventArgs e)
+        {
+            if (ViewModel.LiveLog.Count == 0) return;
+            lstLiveLog.ScrollIntoView(ViewModel.LiveLog[ViewModel.LiveLog.Count - 1]);
         }
 
         private void ViewModel_EventLogged(object sender, string e)

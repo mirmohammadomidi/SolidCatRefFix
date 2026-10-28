@@ -19,6 +19,14 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
     public partial class SolidFixViewModel : ObservableObject
     {
         public ObservableCollection<ProcessOutputDetails> Errors { get; } = new ObservableCollection<ProcessOutputDetails>();
+
+        /// <summary>
+        /// Always-visible activity log (last 500 lines).  Unlike the full
+        /// "Logs" tab it stays on screen, so a long operation never leaves
+        /// the frontend without feedback.  It is appended on the UI thread
+        /// (BeginInvoke) so the CATIA worker thread never blocks on the UI.
+        /// </summary>
+        public ObservableCollection<string> LiveLog { get; } = new ObservableCollection<string>();
         public event EventHandler<int> OnNumberOfAssembliesChanged;
         public event EventHandler<int> OnNumberOfPartsChanged;
         public event EventHandler<int> OnNumberOfDrawingsChanged;
@@ -38,6 +46,15 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
 
         private void CatiaUtils_LogErrors(object sender, string e)
         {
+            Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                LiveLog.Add(e);
+                while (LiveLog.Count > 500)
+                {
+                    LiveLog.RemoveAt(0);
+                }
+            }));
+
             if (EventLogged != null)
             {
                 EventLogged(sender, e);
@@ -70,6 +87,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                 {
                     await Task.Run(async () =>
                     {
+                        CatiaUtils.Log("Loading assembly rows from the database...");
                         List<DocFileView> allAssemblies;
                         if ((extensionTypes & FileExtensionTypes.Assembly) == FileExtensionTypes.Assembly && softwareType == SoftwareType.Solid)
                         {
@@ -113,6 +131,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                         }
                         if (OnNumberOfAssembliesChanged != null)
                             OnNumberOfAssembliesChanged(this, allAssemblies.Count);
+                        CatiaUtils.Log($"{allAssemblies.Count} assembly file(s) found.");
 
 
                         var partDict = new List<PartNewRef>();
@@ -152,8 +171,9 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                         }
                         if (OnNumberOfPartsChanged != null)
                             OnNumberOfPartsChanged(this, allParts.Count);
+                        CatiaUtils.Log($"{allParts.Count} part row(s) loaded.");
 
-                      
+                       
                         List<DocFileView> allDrawings;
                         if ((extensionTypes & FileExtensionTypes.Drawing) == FileExtensionTypes.Drawing && softwareType == SoftwareType.Solid)
                         {
@@ -198,6 +218,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
 
                         if (OnNumberOfDrawingsChanged != null)
                             OnNumberOfDrawingsChanged(this, allDrawings.Count);
+                        CatiaUtils.Log($"{allDrawings.Count} drawing file(s) found.");
                         try
                         {
                             foreach (var part in allParts)
@@ -259,6 +280,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
 
                         Queue<string> assembliesToProcess = new Queue<string>(assemblyList);
                         HashSet<string> processedAssemblies = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        CatiaUtils.Log($"Processing {assemblyList.Count} file(s) one by one (staging and cleanup happen per file)...");
                         while (assembliesToProcess.Count > 0)
                         //foreach (var part in allAssemblies)
                         {
@@ -358,6 +380,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                 {
                     await Task.Run(async () =>
                     {
+                        CatiaUtils.Log($"Loading CATProduct rows from the database (site: {site})...");
                         // -------------------------------------------------
                         // 1-  All CATProduct files for the site.
                         // -------------------------------------------------
@@ -388,11 +411,13 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
 
                         if (OnNumberOfAssembliesChanged != null)
                             OnNumberOfAssembliesChanged(this, allAssemblies.Count);
+                        CatiaUtils.Log($"{allAssemblies.Count} CATProduct file(s) selected for the batch.");
 
                         // -------------------------------------------------
                         // 2-  All CATPart + CATProduct rows -> shared rename map
                         //     (same logic as StartFixing).
                         // -------------------------------------------------
+                        CatiaUtils.Log("Loading CATPart/CATProduct part rows from the database...");
                         List<DocFileView> allParts;
                         if (allSites)
                         {
@@ -461,6 +486,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                         // -------------------------------------------------
                         // 3-  The product paths to process.
                         // -------------------------------------------------
+                        CatiaUtils.Log($"Rename map ready: {partDict.Count} entries for {allParts.Count} part row(s).");
                         List<string> productPaths;
                         if (string.IsNullOrWhiteSpace(replaceAllFolderAddressWith))
                         {

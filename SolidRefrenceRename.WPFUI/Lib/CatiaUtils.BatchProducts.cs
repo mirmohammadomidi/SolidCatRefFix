@@ -323,6 +323,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
                 // CATIA cannot hold two documents with the same file name.
                 CloseConflictingDocumentsByName(GetFileNameSafe(productPath), normalizedProductPath);
 
+                ConsoleWriteLine("  Opening the assembly in CATIA (large assemblies can take a while)...");
                 productDoc = (ProductDocument)catiaApp.Documents.Open(productPath);
                 if (productDoc == null)
                     throw new Exception("ProductDocument returned null after opening.");

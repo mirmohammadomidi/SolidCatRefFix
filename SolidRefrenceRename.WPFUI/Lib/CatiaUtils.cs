@@ -171,6 +171,17 @@ namespace CatiaReferenceRename.WPFUI.Lib
                 LogErrors(null, message);
             }
         }
+
+        /// <summary>
+        /// Public logging entry point so callers (e.g. the ViewModel) can
+        /// report their own progress through the same pipeline as the
+        /// internal CATIA messages (console + LogErrors event).
+        /// </summary>
+        public static void Log(string message)
+        {
+            ConsoleWriteLine(message);
+        }
+
         private static bool TryInitCatia()
         {
             try
@@ -222,6 +233,7 @@ namespace CatiaReferenceRename.WPFUI.Lib
         private static bool WaitForCatiaReady(int timeoutSeconds = 120)
         {
             var deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
+            DateTime lastHeartbeat = DateTime.UtcNow;
             while (DateTime.UtcNow < deadline)
             {
                 try
@@ -239,6 +251,16 @@ namespace CatiaReferenceRename.WPFUI.Lib
                 catch (Exception)
                 {
                     System.Threading.Thread.Sleep(2000);
+                }
+
+                // Heartbeat: a freshly launched session can stay unresponsive
+                // for 30-90 seconds - without this line the frontend looks
+                // frozen although everything is fine.
+                if ((DateTime.UtcNow - lastHeartbeat).TotalSeconds >= 10)
+                {
+                    int elapsed = (int)(timeoutSeconds - (deadline - DateTime.UtcNow).TotalSeconds);
+                    ConsoleWriteLine($"  Still waiting for the CATIA session to become ready ({elapsed}s elapsed)...");
+                    lastHeartbeat = DateTime.UtcNow;
                 }
             }
             return false;
