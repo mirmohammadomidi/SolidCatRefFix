@@ -73,5 +73,7 @@ namespace SolidRefrenceRename.WPFUI.Data.Entities
         [NotMapped]
         public string CatiaPartDefinition => DOCNO + "." + EXTENSION;
 
+        public int AssortmentGroupId { get; set; }
+
     }
 }

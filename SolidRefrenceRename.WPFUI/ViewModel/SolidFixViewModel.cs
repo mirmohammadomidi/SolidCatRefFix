@@ -69,6 +69,22 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
             }
         }
 
+        /// <summary>
+        /// Reports whether an AssortmentGroupId filter from generalConfig.json
+        /// is active for the upcoming vw_docFiles selections.
+        /// </summary>
+        private void LogAssortmentGroupFilter()
+        {
+            if (App.DefaultAssortmentGroupId > 0)
+            {
+                CatiaUtils.Log($"AssortmentGroupId filter active: only vw_docFiles rows with AssortmentGroupId = {App.DefaultAssortmentGroupId} are selected.");
+            }
+            else
+            {
+                CatiaUtils.Log("No AssortmentGroupId configured in generalConfig.json - all vw_docFiles rows are selected.");
+            }
+        }
+
         public async Task StartFixing(SoftwareType softwareType, List<string> fileNamesToInclude = null, string patternToMatchAllFolderAddressWith = null, string replaceAllFolderAddressWith = null, FileExtensionTypes extensionTypes = FileExtensionTypes.All, string site = "All Sites")
         {
             //if (!string.IsNullOrWhiteSpace(convertAllDestinationFilesToFolder))
@@ -81,6 +97,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
             //}
             bool allSites = site.ToLower().Contains("all");
             Errors.Clear();
+            LogAssortmentGroupFilter();
             using (var context = new IFSCodeCleansingDBContext(App.DefaultConnectionString))
             {
                 try
@@ -93,11 +110,11 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                         {
                             if (allSites)
                             {
-                                allAssemblies = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "SLDASM").ToListAsync();
+                                allAssemblies = await context.DocFileViewsFiltered.Where(uu => uu.EXTENSION.ToUpper() == "SLDASM").ToListAsync();
                             }
                             else
                             {
-                                allAssemblies = await context.DocFileViews
+                                allAssemblies = await context.DocFileViewsFiltered
                                 .Where(uu => uu.EXTENSION.ToUpper() == "SLDASM" && uu.SourceDbCode.ToUpper().Contains(site.ToUpper()))
                                 .ToListAsync();
                             }
@@ -107,11 +124,11 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                         {
                             if (allSites)
                             {
-                                allAssemblies = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATPRODUCT").ToListAsync();
+                                allAssemblies = await context.DocFileViewsFiltered.Where(uu => uu.EXTENSION.ToUpper() == "CATPRODUCT").ToListAsync();
                             }
                             else
                             {
-                                allAssemblies = await context.DocFileViews
+                                allAssemblies = await context.DocFileViewsFiltered
                                 .Where(uu => uu.EXTENSION.ToUpper() == "CATPRODUCT" && uu.SourceDbCode.ToUpper().Contains(site.ToUpper()))
                                 .ToListAsync();
                             }
@@ -140,13 +157,13 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                         {
                             if (allSites)
                             {
-                                allParts = await context.DocFileViews
+                                allParts = await context.DocFileViewsFiltered
                                 .Where(uu => uu.EXTENSION.ToUpper() == "SLDPRT" || uu.EXTENSION.ToUpper() == "SLDASM")
                                 .ToListAsync();
                             }
                             else
                             {
-                                allParts = await context.DocFileViews
+                                allParts = await context.DocFileViewsFiltered
                                .Where(uu => (uu.EXTENSION.ToUpper() == "SLDPRT" || uu.EXTENSION.ToUpper() == "SLDASM") && uu.SourceDbCode.ToUpper().Contains(site.ToUpper()))
                                .ToListAsync();
                             }
@@ -155,12 +172,12 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                         {
                             if (allSites)
                             {
-                                allParts = await context.DocFileViews
+                                allParts = await context.DocFileViewsFiltered
                             .Where(uu => uu.EXTENSION.ToUpper() == "CATPART" || uu.EXTENSION.ToUpper() == "CATPRODUCT").ToListAsync();
                             }
                             else
                             {
-                                allParts = await context.DocFileViews
+                                allParts = await context.DocFileViewsFiltered
                                .Where(uu => (uu.EXTENSION.ToUpper() == "CATPART" || uu.EXTENSION.ToUpper() == "CATPRODUCT") && uu.SourceDbCode.ToUpper().Contains(site.ToUpper()))
                                .ToListAsync();
                             }
@@ -179,11 +196,11 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                         {
                             if (allSites)
                             {
-                                allDrawings = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "SLDDRW").ToListAsync();
+                                allDrawings = await context.DocFileViewsFiltered.Where(uu => uu.EXTENSION.ToUpper() == "SLDDRW").ToListAsync();
                             }
                             else
                             {
-                                allDrawings = await context.DocFileViews
+                                allDrawings = await context.DocFileViewsFiltered
                                 .Where(uu => uu.EXTENSION.ToUpper() == "SLDDRW" &&
                                     uu.SourceDbCode.ToUpper().Contains(site.ToUpper())).ToListAsync();
                             }
@@ -192,11 +209,11 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                         {
                             if (allSites)
                             {
-                                allDrawings = await context.DocFileViews.Where(uu => uu.EXTENSION.ToUpper() == "CATDRAWING").ToListAsync();
+                                allDrawings = await context.DocFileViewsFiltered.Where(uu => uu.EXTENSION.ToUpper() == "CATDRAWING").ToListAsync();
                             }
                             else
                             {
-                                allDrawings = await context.DocFileViews
+                                allDrawings = await context.DocFileViewsFiltered
                                 .Where(uu => uu.EXTENSION.ToUpper() == "CATDRAWING" &&
                                 uu.SourceDbCode.ToUpper() == site.ToUpper()).ToListAsync();
                             }
@@ -374,6 +391,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
         {
             bool allSites = site.ToLower().Contains("all");
             Errors.Clear();
+            LogAssortmentGroupFilter();
             using (var context = new IFSCodeCleansingDBContext(App.DefaultConnectionString))
             {
                 try
@@ -387,12 +405,12 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                         List<DocFileView> allAssemblies;
                         if (allSites)
                         {
-                            allAssemblies = await context.DocFileViews
+                            allAssemblies = await context.DocFileViewsFiltered
                                 .Where(uu => uu.EXTENSION.ToUpper() == "CATPRODUCT").ToListAsync();
                         }
                         else
                         {
-                            allAssemblies = await context.DocFileViews
+                            allAssemblies = await context.DocFileViewsFiltered
                                 .Where(uu => uu.EXTENSION.ToUpper() == "CATPRODUCT" &&
                                              uu.SourceDbCode.ToUpper().Contains(site.ToUpper()))
                                 .ToListAsync();
@@ -421,13 +439,13 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
                         List<DocFileView> allParts;
                         if (allSites)
                         {
-                            allParts = await context.DocFileViews
+                            allParts = await context.DocFileViewsFiltered
                                 .Where(uu => uu.EXTENSION.ToUpper() == "CATPART" || uu.EXTENSION.ToUpper() == "CATPRODUCT")
                                 .ToListAsync();
                         }
                         else
                         {
-                            allParts = await context.DocFileViews
+                            allParts = await context.DocFileViewsFiltered
                                 .Where(uu => (uu.EXTENSION.ToUpper() == "CATPART" || uu.EXTENSION.ToUpper() == "CATPRODUCT") &&
                                              uu.SourceDbCode.ToUpper().Contains(site.ToUpper()))
                                 .ToListAsync();
@@ -567,6 +585,7 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
         {
             bool allSites = site.ToLower().Contains("all");
             IsRunning = true;
+            LogAssortmentGroupFilter();
 
             try
             {
@@ -576,13 +595,13 @@ namespace SolidRefrenceRename.WPFUI.ViewModel
 
                     if (allSites)
                     {
-                        parts = await context.DocFileViews
+                        parts = await context.DocFileViewsFiltered
                             .Where(uu => uu.EXTENSION.ToUpper() == "CATPART" || uu.EXTENSION.ToUpper() == "CATPRODUCT")
                             .ToListAsync();
                     }
                     else
                     {
-                        parts = await context.DocFileViews
+                        parts = await context.DocFileViewsFiltered
                             .Where(uu => (uu.EXTENSION.ToUpper() == "CATPART" || uu.EXTENSION.ToUpper() == "CATPRODUCT")
                                   && uu.SourceDbCode.ToUpper().Contains(site.ToUpper()))
                             .ToListAsync();

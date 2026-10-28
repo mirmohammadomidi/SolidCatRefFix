@@ -17,6 +17,13 @@ namespace SolidRefrenceRename.WPFUI
     public partial class App : Application
     {
         public static string DefaultConnectionString { get; private set; }
+
+        /// <summary>
+        /// AssortmentGroupId from generalConfig.json.  When &gt; 0, only
+        /// vw_docFiles rows with this AssortmentGroupId are selected
+        /// everywhere in the application; 0 = no filtering.
+        /// </summary>
+        public static int DefaultAssortmentGroupId { get; private set; }
         public static string AppSettingsDirectory => Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) + "\\IFSDocumentRenamingUtil";
         public static string GeneralConfigFileAddress = AppSettingsDirectory + "\\generalConfig.json";
         public App()
@@ -44,7 +51,8 @@ namespace SolidRefrenceRename.WPFUI
                     };
                     cobfigurations.SaveToFile(gc, GeneralConfigFileAddress);
                 }
-                DefaultConnectionString = gc.ManagementConnectionString;              
+                DefaultConnectionString = gc.ManagementConnectionString;
+                DefaultAssortmentGroupId = gc.AssortmentGroupId; 
 
             }
         }

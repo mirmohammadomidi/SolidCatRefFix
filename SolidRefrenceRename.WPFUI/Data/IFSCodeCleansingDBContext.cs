@@ -1,4 +1,5 @@
-﻿using SolidRefrenceRename.WPFUI.Data.Entities;
+﻿using SolidRefrenceRename.WPFUI;
+using SolidRefrenceRename.WPFUI.Data.Entities;
 using System;
 using System.Collections.Generic;
 using System.Data.Entity;
@@ -24,6 +25,28 @@ namespace SolidRefrenceRename.WPFUI.Data
 
         // DbSet for your view
         public DbSet<DocFileView> DocFileViews { get; set; }
+
+        /// <summary>
+        /// The query source for vw_docFiles with the AssortmentGroupId filter
+        /// from generalConfig.json applied.  All selections in the
+        /// application go through this property: when an AssortmentGroupId
+        /// is configured (value &gt; 0) only rows of that assortment group
+        /// are returned; with 0 (not configured) every row is returned,
+        /// exactly like the plain <see cref="DocFileViews"/> set.
+        /// </summary>
+        public IQueryable<DocFileView> DocFileViewsFiltered
+        {
+            get
+            {
+                var query = DocFileViews.AsQueryable();
+                int assortmentGroupId = App.DefaultAssortmentGroupId;
+                if (assortmentGroupId > 0)
+                {
+                    query = query.Where(uu => uu.AssortmentGroupId == assortmentGroupId);
+                }
+                return query;
+            }
+        }
 
         protected override void OnModelCreating(DbModelBuilder modelBuilder)
         {
